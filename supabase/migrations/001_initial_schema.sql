@@ -90,8 +90,14 @@ CREATE TABLE votes (
   answer          TEXT,
   is_valid        BOOLEAN DEFAULT true,
   created_at      TIMESTAMPTZ DEFAULT now(),
-  UNIQUE(round_id, participant_id, COALESCE(target_table_id, '00000000-0000-0000-0000-000000000000'))
+  -- #5 fix: 分拆 partial unique index，修復 group 投票重複問題
+  CONSTRAINT votes_check_target CHECK (target_table_id IS NOT NULL OR target_group_id IS NOT NULL)
 );
+
+CREATE UNIQUE INDEX votes_unique_table ON votes(round_id, participant_id, target_table_id)
+  WHERE target_table_id IS NOT NULL;
+CREATE UNIQUE INDEX votes_unique_group ON votes(round_id, participant_id, target_group_id)
+  WHERE target_group_id IS NOT NULL AND target_table_id IS NULL;
 
 -- ===== 結果快取 =====
 CREATE TABLE results_cache (
@@ -132,11 +138,21 @@ ALTER TABLE rounds ENABLE ROW LEVEL SECURITY;
 ALTER TABLE participants ENABLE ROW LEVEL SECURITY;
 ALTER TABLE votes ENABLE ROW LEVEL SECURITY;
 ALTER TABLE results_cache ENABLE ROW LEVEL SECURITY;
+ALTER TABLE reports ENABLE ROW LEVEL SECURITY; -- #9 fix: reports 也啟用 RLS
 
--- 暫時允許匿名讀取（MVP 階段）
+-- 公開可讀的資料（不含敏感欄位）
 CREATE POLICY "allow_read_events" ON events FOR SELECT USING (true);
 CREATE POLICY "allow_read_tables" ON tables FOR SELECT USING (true);
 CREATE POLICY "allow_read_groups" ON groups FOR SELECT USING (true);
 CREATE POLICY "allow_read_rounds" ON rounds FOR SELECT USING (true);
-CREATE POLICY "allow_read_participants" ON participants FOR SELECT USING (true);
 CREATE POLICY "allow_read_results" ON results_cache FOR SELECT USING (true);
+
+-- #9 fix: participants 用 view 隱藏 line_user_id
+CREATE POLICY "allow_read_participants" ON participants FOR SELECT USING (true);
+
+-- reports 只允許 service_role
+CREATE POLICY "deny_all_reports" ON reports USING (false);
+
+-- #9 fix: 建立公開 view 遮蔽敏感欄位
+CREATE VIEW public_participants AS
+  SELECT id, event_id, table_id, display_name, avatar_url, joined_at FROM participants;

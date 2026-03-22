@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { voteSchema, checkSelfVote, checkRoundOpen } from '@/lib/anti-cheat'
 import { createAdminSupabase } from '@/lib/supabase/server'
+import { verifyParticipantToken } from '@/lib/auth'
 
 export async function POST(request: NextRequest) {
   try {
@@ -17,18 +18,23 @@ export async function POST(request: NextRequest) {
 
     const { round_id, target_table_id, target_group_id, score, answer } = parsed.data
 
-    // 從 header 取得 participant_id（JWT 驗證後注入）
-    const participantId = request.headers.get('x-participant-id')
-    if (!participantId) {
+    // 2. JWT 驗證身份（#1 fix: 不再信任 client header）
+    const token = request.headers.get('authorization')?.replace('Bearer ', '')
+    if (!token) {
       return NextResponse.json({ error: '未登入' }, { status: 401 })
     }
+    const payload = verifyParticipantToken(token)
+    if (!payload) {
+      return NextResponse.json({ error: 'token 無效或已過期' }, { status: 401 })
+    }
+    const participantId = payload.sub
 
     const supabase = createAdminSupabase()
 
-    // 2. 查詢回合狀態
+    // 3. 查詢回合狀態（JOIN events 取 code，減少一次查詢 #18 fix）
     const { data: round, error: roundError } = await supabase
       .from('rounds')
-      .select('id, status, config, type_id, event_id')
+      .select('id, status, config, type_id, event_id, events(code)')
       .eq('id', round_id)
       .single()
 
@@ -36,34 +42,28 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '回合不存在' }, { status: 404 })
     }
 
-    // 3. 檢查回合是否開放
+    // 4. 檢查回合是否開放
     const roundCheck = checkRoundOpen(round.status)
     if (!roundCheck.passed) {
       return NextResponse.json({ error: roundCheck.error }, { status: 403 })
     }
 
-    // 4. 查詢投票者的桌次
-    const { data: participant } = await supabase
-      .from('participants')
-      .select('id, table_id, event_id')
-      .eq('id', participantId)
-      .single()
-
-    if (!participant || participant.event_id !== round.event_id) {
-      return NextResponse.json({ error: '參與者資料異常' }, { status: 403 })
+    // 5. 驗證 JWT 中的 event_id 與 round 的 event_id 一致
+    if (payload.event_id !== round.event_id) {
+      return NextResponse.json({ error: '參與者不屬於此活動' }, { status: 403 })
     }
 
-    // 5. 查詢投票者所屬的組別
+    // 6. 查詢投票者所屬的組別
     const { data: voterGroups } = await supabase
       .from('group_tables')
       .select('group_id')
-      .eq('table_id', participant.table_id)
+      .eq('table_id', payload.table_id)
 
     const voterGroupIds = (voterGroups ?? []).map((g: { group_id: string }) => g.group_id)
 
-    // 6. 防作弊：不能評自己桌/組
+    // 7. 防作弊：不能評自己桌/組
     const selfCheck = checkSelfVote(
-      participant.table_id,
+      payload.table_id,
       target_table_id,
       target_group_id,
       voterGroupIds,
@@ -73,7 +73,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: selfCheck.error }, { status: 403 })
     }
 
-    // 7. 寫入投票
+    // 8. 寫入投票
     const { error: voteError } = await supabase.from('votes').insert({
       round_id,
       participant_id: participantId,
@@ -92,62 +92,28 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '投票失敗' }, { status: 500 })
     }
 
-    // 8. 更新 results_cache（預計算）
-    if (target_table_id && score !== undefined) {
-      await supabase.rpc('increment_result_cache', {
+    // 9. 更新 results_cache（#96 fix: 檢查 RPC error）
+    const targetId = target_table_id ?? target_group_id
+    const targetType = target_table_id ? 'table' : 'group'
+    if (targetId && score !== undefined) {
+      const { error: cacheError } = await supabase.rpc('increment_result_cache', {
         p_round_id: round_id,
-        p_target_type: 'table',
-        p_target_id: target_table_id,
+        p_target_type: targetType,
+        p_target_id: targetId,
         p_score: score,
       })
-    } else if (target_group_id && score !== undefined) {
-      await supabase.rpc('increment_result_cache', {
-        p_round_id: round_id,
-        p_target_type: 'group',
-        p_target_id: target_group_id,
-        p_score: score,
-      })
+      if (cacheError) {
+        console.error('[Vote] Cache update failed:', cacheError)
+      }
     }
 
-    // 9. 取得投票進度
-    const { count: votedCount } = await supabase
-      .from('votes')
-      .select('*', { count: 'exact', head: true })
-      .eq('round_id', round_id)
-
-    const { count: totalCount } = await supabase
-      .from('participants')
-      .select('*', { count: 'exact', head: true })
-      .eq('event_id', round.event_id)
-
-    // 10. 透過 Realtime 廣播更新
-    const eventCode = await getEventCode(supabase, round.event_id)
-    if (eventCode) {
-      await supabase.channel(`event:${eventCode}`).send({
-        type: 'broadcast',
-        event: 'score_update',
-        payload: {
-          round_id,
-          voted: votedCount ?? 0,
-          total: totalCount ?? 0,
-          entity_id: target_table_id ?? target_group_id,
-          score,
-        },
-      })
-    }
+    // #10 fix: Server 端不直接 broadcast
+    // 前端透過 Supabase Realtime postgres_changes 監聽 results_cache 變更
+    // 或前端每 3 秒 polling results API 作為 fallback
 
     return NextResponse.json({ success: true })
   } catch (err) {
     console.error('[Vote] Unexpected error:', err)
     return NextResponse.json({ error: '伺服器錯誤' }, { status: 500 })
   }
-}
-
-async function getEventCode(supabase: ReturnType<typeof createAdminSupabase>, eventId: string) {
-  const { data } = await supabase
-    .from('events')
-    .select('code')
-    .eq('id', eventId)
-    .single()
-  return data?.code
 }

@@ -1,9 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createAdminSupabase } from '@/lib/supabase/server'
-import { generateEventCode } from '@/lib/utils'
+import { generateSecureEventCode, verifyAdminKey } from '@/lib/auth'
+import { z } from 'zod/v4'
 
-/** 取得活動列表 */
-export async function GET() {
+/** 取得活動列表（#2 fix: 加上 admin 認證） */
+export async function GET(request: NextRequest) {
+  const adminKey = request.headers.get('x-admin-key')
+  if (!verifyAdminKey(adminKey)) {
+    return NextResponse.json({ error: '權限不足' }, { status: 401 })
+  }
+
   const supabase = createAdminSupabase()
 
   const { data: events, error } = await supabase
@@ -23,27 +29,40 @@ export async function GET() {
   return NextResponse.json({ events })
 }
 
+/** #7 fix: 建立活動 input 用 zod 嚴格驗證 */
+const createEventSchema = z.object({
+  name: z.string().min(1).max(100),
+  table_count: z.number().int().min(1).max(50),
+  rounds: z.array(z.object({
+    title: z.string().min(1).max(100),
+    type_id: z.enum(['scoring', 'quiz', 'cheer', 'custom']),
+    config: z.record(z.string(), z.unknown()).optional(),
+  })).max(20).optional(),
+})
+
 /** 建立新活動 */
 export async function POST(request: NextRequest) {
   try {
     const adminKey = request.headers.get('x-admin-key')
-    if (adminKey !== process.env.ADMIN_SECRET_KEY) {
+    if (!verifyAdminKey(adminKey)) {
       return NextResponse.json({ error: '權限不足' }, { status: 401 })
     }
 
     const body = await request.json()
-    const { name, table_count, rounds: roundDefs } = body as {
-      name: string
-      table_count: number
-      rounds?: Array<{ title: string; type_id: string; config?: Record<string, unknown> }>
+
+    // #7 fix: zod 驗證 table_count 和 rounds
+    const parsed = createEventSchema.safeParse(body)
+    if (!parsed.success) {
+      return NextResponse.json(
+        { error: '輸入格式錯誤', details: parsed.error.issues },
+        { status: 400 }
+      )
     }
 
-    if (!name || !table_count) {
-      return NextResponse.json({ error: '活動名稱和桌數為必填' }, { status: 400 })
-    }
+    const { name, table_count, rounds: roundDefs } = parsed.data
 
     const supabase = createAdminSupabase()
-    const code = generateEventCode()
+    const code = generateSecureEventCode() // #17 fix: crypto-safe random
 
     // 1. 建立活動
     const { data: event, error: eventError } = await supabase

@@ -8,7 +8,8 @@ import { ScoreCounter } from '@/components/display/ScoreCounter'
 import { useRealtimeMulti } from '@/hooks/useRealtime'
 import { useLeaderboardStore } from '@/hooks/useLeaderboard'
 import { useRoundStore } from '@/hooks/useRound'
-import type { ScoreBoard, RoundStatus } from '@/types/database'
+import { CHANNELS } from '@/lib/channels'
+import type { ScoreBoard, Round, RoundStatus } from '@/types/database'
 
 type DisplayMode = 'idle' | 'round-intro' | 'voting' | 'counting' | 'reveal' | 'final'
 
@@ -62,7 +63,8 @@ export default function DisplayPage({
   }, [])
 
   const handleCommand = useCallback((payload: Record<string, unknown>) => {
-    const data = payload as { action?: string; round?: Record<string, unknown>; countdown?: number; event_name?: string }
+    try {
+    const data = payload as { action?: string; round?: Round; countdown?: number; event_name?: string }
     switch (data.action) {
       case 'show_idle':
         setMode('idle')
@@ -71,7 +73,7 @@ export default function DisplayPage({
       case 'show_round_intro':
         setMode('round-intro')
         setParticleIntensity('normal')
-        if (data.round) setCurrentRound(data.round as never)
+        if (data.round) setCurrentRound(data.round) // #24 fix: 移除 as never
         break
       case 'start_countdown':
         if (data.countdown) setCountdown(data.countdown)
@@ -84,9 +86,11 @@ export default function DisplayPage({
         if (data.event_name) setEventName(data.event_name)
         break
     }
+    } catch { /* payload 解析錯誤不 crash */ }
   }, [setCurrentRound, setCountdown])
 
-  useRealtimeMulti(`display:${code}`, {
+  // #11 fix: 使用統一 channel 名稱
+  useRealtimeMulti(CHANNELS.scores(code), {
     score_update: handleScoreUpdate,
     status_change: handleStatusChange,
     command: handleCommand,

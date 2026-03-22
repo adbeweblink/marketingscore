@@ -23,13 +23,13 @@ const scoringEngine: GameEngine = {
       return { valid: false, error: '分數必須是整數' }
     }
 
-    // 防自評
+    // 防自評（前端早期防禦，API 層也會檢查）
     if (!config.allow_self_vote) {
-      if (config.scoring_unit === 'group' && target_group_id) {
-        // 組別模式：不能評自己的組（由 API 層處理）
-      } else if (target_table_id && voter_table_id === target_table_id) {
+      if (target_table_id && voter_table_id === target_table_id) {
         return { valid: false, error: '不能評自己的桌' }
       }
+      // 組別模式的自評檢查由 API 層的 checkSelfVote 處理
+      // （前端沒有 voterGroupIds，無法在此檢查）
     }
 
     return { valid: true }

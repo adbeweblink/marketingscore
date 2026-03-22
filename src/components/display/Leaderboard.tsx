@@ -36,11 +36,14 @@ export function Leaderboard({
 }: LeaderboardProps) {
   const visibleEntries = revealing ? entries.slice(-revealIndex) : entries
 
+  // #20 fix: 預建 rankMap 避免 O(n²) indexOf
+  const rankMap = new Map(entries.map((e, i) => [e.entity_id, i + 1]))
+
   return (
     <div className={cn('w-full max-w-4xl mx-auto space-y-3', className)}>
       <AnimatePresence mode="popLayout">
         {visibleEntries.map((entry, index) => {
-          const rank = entries.indexOf(entry) + 1
+          const rank = rankMap.get(entry.entity_id) ?? index + 1
           const style = RANK_STYLES[rank] ?? 'bg-white/5 border-white/10 text-white/80'
 
           return (

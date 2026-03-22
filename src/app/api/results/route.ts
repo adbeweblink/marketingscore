@@ -1,20 +1,30 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createAdminSupabase } from '@/lib/supabase/server'
 
-/** 取得排行榜結果 */
+/** #23 fix: 明確結果型別 */
+interface CacheResult {
+  round_id: string
+  target_type: 'table' | 'group'
+  target_id: string
+  total_score: number
+  vote_count: number
+  rank: number | null
+  metadata: Record<string, unknown>
+}
+
+/** 取得排行榜結果（#16: 用 event_code 取代 event_id 降低 IDOR） */
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url)
-  const eventId = searchParams.get('event_id')
+  const eventCode = searchParams.get('event_code')
   const roundId = searchParams.get('round_id')
 
-  if (!eventId && !roundId) {
-    return NextResponse.json({ error: '需要 event_id 或 round_id' }, { status: 400 })
+  if (!eventCode && !roundId) {
+    return NextResponse.json({ error: '需要 event_code 或 round_id' }, { status: 400 })
   }
 
   const supabase = createAdminSupabase()
 
   if (roundId) {
-    // 取得單一回合結果
     const { data: results, error } = await supabase
       .from('results_cache')
       .select('*')
@@ -25,16 +35,25 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: '查詢失敗' }, { status: 500 })
     }
 
-    // 附加桌名
-    const enriched = await enrichResults(supabase, results ?? [])
+    const enriched = await enrichResults(supabase, (results ?? []) as EnrichableResult[])
     return NextResponse.json({ results: enriched })
   }
 
-  // 取得活動總積分（所有回合加總）
+  // 先用 event_code 查 event_id
+  const { data: event } = await supabase
+    .from('events')
+    .select('id')
+    .eq('code', eventCode!.toUpperCase())
+    .single()
+
+  if (!event) {
+    return NextResponse.json({ error: '活動不存在' }, { status: 404 })
+  }
+
   const { data: rounds } = await supabase
     .from('rounds')
     .select('id')
-    .eq('event_id', eventId!)
+    .eq('event_id', event.id)
 
   if (!rounds || rounds.length === 0) {
     return NextResponse.json({ results: [] })
@@ -46,7 +65,6 @@ export async function GET(request: NextRequest) {
     .select('*')
     .in('round_id', roundIds)
 
-  // 按 target_id 加總
   const totals = new Map<string, {
     target_type: string
     target_id: string
@@ -54,7 +72,7 @@ export async function GET(request: NextRequest) {
     round_scores: Record<string, number>
   }>()
 
-  for (const r of allResults ?? []) {
+  for (const r of (allResults ?? []) as CacheResult[]) {
     const existing = totals.get(r.target_id)
     if (existing) {
       existing.total_score += r.total_score
@@ -77,10 +95,13 @@ export async function GET(request: NextRequest) {
   return NextResponse.json({ results: enriched })
 }
 
-async function enrichResults(supabase: ReturnType<typeof createAdminSupabase>, results: Array<Record<string, unknown>>) {
+interface TableInfo { id: string; number: number; name: string | null }
+interface EnrichableResult { target_type: string; target_id: string; [key: string]: unknown }
+
+async function enrichResults(supabase: ReturnType<typeof createAdminSupabase>, results: EnrichableResult[]) {
   const tableIds = results
     .filter((r) => r.target_type === 'table')
-    .map((r) => r.target_id as string)
+    .map((r) => r.target_id)
 
   if (tableIds.length === 0) return results
 
@@ -89,14 +110,13 @@ async function enrichResults(supabase: ReturnType<typeof createAdminSupabase>, r
     .select('id, number, name')
     .in('id', tableIds)
 
-  interface TableInfo { id: string; number: number; name: string | null }
   const tableMap = new Map<string, TableInfo>()
   for (const t of (tables ?? []) as TableInfo[]) {
     tableMap.set(t.id, t)
   }
 
   return results.map((r) => {
-    const table = tableMap.get(r.target_id as string)
+    const table = tableMap.get(r.target_id)
     return {
       ...r,
       entity_name: table?.name ?? `第 ${table?.number ?? '?'} 桌`,
