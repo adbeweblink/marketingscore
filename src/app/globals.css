@@ -1,0 +1,99 @@
+@import "tailwindcss";
+
+@theme {
+  /* 金碧輝煌色系 */
+  --color-gold-50: #FFF9E6;
+  --color-gold-100: #FFF0BF;
+  --color-gold-200: #FFE480;
+  --color-gold-300: #FFD740;
+  --color-gold-400: #FFCA28;
+  --color-gold-500: #FFB300;
+  --color-gold-600: #E6A200;
+  --color-gold-700: #CC8F00;
+  --color-gold-800: #996B00;
+  --color-gold-900: #664700;
+
+  --color-imperial-50: #1A0A00;
+  --color-imperial-100: #2D1400;
+  --color-imperial-200: #3D1E08;
+  --color-imperial-300: #5C2E10;
+  --color-imperial-400: #7A3E18;
+  --color-imperial-500: #8B4513;
+  --color-imperial-600: #A0522D;
+  --color-imperial-700: #CD853F;
+  --color-imperial-800: #DEB887;
+  --color-imperial-900: #FAEBD7;
+
+  --color-surface-dark: #0D0D0D;
+  --color-surface-card: #1A1A1A;
+  --color-surface-elevated: #262626;
+
+  --font-display: 'Noto Sans TC', 'Microsoft JhengHei', sans-serif;
+  --font-body: 'Noto Sans TC', 'Microsoft JhengHei', sans-serif;
+}
+
+/* 大螢幕金碧輝煌主題 */
+.theme-golden {
+  background: radial-gradient(ellipse at center, #1A0A00 0%, #0D0D0D 70%);
+  color: #FFD740;
+}
+
+/* 分數跳動動畫 */
+@keyframes score-pulse {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.15); }
+}
+
+@keyframes score-float-up {
+  0% { opacity: 1; transform: translateY(0); }
+  100% { opacity: 0; transform: translateY(-60px); }
+}
+
+@keyframes shimmer {
+  0% { background-position: -200% center; }
+  100% { background-position: 200% center; }
+}
+
+@keyframes heartbeat {
+  0%, 100% { transform: scale(1); }
+  14% { transform: scale(1.08); }
+  28% { transform: scale(1); }
+  42% { transform: scale(1.08); }
+  56% { transform: scale(1); }
+}
+
+.animate-score-pulse {
+  animation: score-pulse 0.6s ease-in-out;
+}
+
+.animate-float-up {
+  animation: score-float-up 1.5s ease-out forwards;
+}
+
+.animate-shimmer {
+  background: linear-gradient(90deg, #FFB300, #FFD740, #FFF0BF, #FFD740, #FFB300);
+  background-size: 200% auto;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: shimmer 3s linear infinite;
+}
+
+.animate-heartbeat {
+  animation: heartbeat 1.2s ease-in-out infinite;
+}
+
+/* 金色光暈 */
+.glow-gold {
+  text-shadow:
+    0 0 10px rgba(255, 202, 40, 0.5),
+    0 0 20px rgba(255, 179, 0, 0.3),
+    0 0 40px rgba(255, 179, 0, 0.15);
+}
+
+.glow-gold-strong {
+  text-shadow:
+    0 0 10px rgba(255, 202, 40, 0.8),
+    0 0 30px rgba(255, 179, 0, 0.6),
+    0 0 60px rgba(255, 179, 0, 0.4),
+    0 0 100px rgba(255, 179, 0, 0.2);
+}
