@@ -254,7 +254,8 @@ function HostControlInner({
       }
 
       case 'show_final': {
-        await callRoundAPI('countdown', undefined, { seconds: 0 })
+        // Bug 2 fix: 改呼叫 finalize action，把 event status 改成 'finished'
+        await callRoundAPI('finalize')
         break
       }
     }
@@ -359,7 +360,7 @@ function HostControlInner({
         {/* Header */}
         <div className="text-center mb-4">
           <h1 className="text-xl font-bold text-gold-200">主持人控制台</h1>
-          <p className="text-xs text-white/30">活動 ID: {id}</p>
+          <p className="text-xs text-white/30">活動代碼: {eventCode || id}</p>
           {adminKey && (
             <p className="text-xs text-green-400/60 mt-0.5">已驗證管理員</p>
           )}
@@ -561,6 +562,14 @@ function HostControlInner({
           </div>
         )}
 
+        {/* 操作提示 */}
+        <div className="mb-4 p-4 rounded-xl bg-gold-400/5 border border-gold-400/20">
+          <p className="text-gold-200/80 text-sm font-bold mb-1">📋 操作流程</p>
+          <p className="text-white/40 text-xs">
+            1. 點 ▶ 開始回合 → 2. 等大家投完 → 3. 長按結束 → 4. 揭曉結果 → 5. 下一輪
+          </p>
+        </div>
+
         {/* 回合列表 */}
         <div className="space-y-2">
           <h3 className="text-sm font-bold text-white/30 mb-2">
@@ -595,10 +604,10 @@ function HostControlInner({
                 <button
                   onClick={() => handleAction('start', round.id)}
                   disabled={actionLoading}
-                  className="w-8 h-8 rounded-lg bg-green-500/20 text-green-300 flex items-center justify-center
+                  className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-green-500/20 text-green-300 text-sm font-bold
                     disabled:opacity-50"
                 >
-                  <Play size={14} />
+                  <Play size={16} /> 開始
                 </button>
               )}
             </motion.div>
@@ -615,7 +624,7 @@ function HostControlInner({
         <div className="fixed bottom-0 left-0 right-0 p-4 bg-surface-dark/90 backdrop-blur-lg border-t border-white/5">
           <div className="max-w-lg mx-auto flex gap-2">
             <a
-              href={`/display/${id}`}
+              href={`/display/${eventCode || id}`}
               target="_blank"
               className="flex-1 flex items-center justify-center gap-2 py-3 rounded-xl font-medium text-sm
                 bg-white/5 text-white/60 active:bg-white/10"

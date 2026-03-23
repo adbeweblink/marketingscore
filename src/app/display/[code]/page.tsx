@@ -89,6 +89,14 @@ export default function DisplayPage({
 
   // ─── useLiveSync：1 秒 polling，偵測回合狀態切換 ──────────────
   const handleRoundChange = useCallback((data: LiveState) => {
+    // Bug 2 fix: event_status === 'finished' 時切到 final mode
+    if (data.event_status === 'finished') {
+      setMode('final')
+      setParticleIntensity('celebration')
+      fetchLatestResults()
+      return
+    }
+
     const newStatus = data.current_round_status
     const prevStatus = lastRoundStatusRef.current
 
@@ -153,16 +161,16 @@ export default function DisplayPage({
             <p className="text-2xl text-gold-200/50 mb-8">
               掃描 QR Code 加入活動
             </p>
-            <div className="w-72 h-72 bg-white rounded-2xl mx-auto flex items-center justify-center p-4">
+            <div className="w-96 h-96 bg-white rounded-2xl mx-auto flex items-center justify-center p-4">
               <QRCodeSVG
                 value={`${typeof window !== 'undefined' ? window.location.origin : 'https://marketingscore.netlify.app'}/play/${code}`}
-                size={256}
+                size={360}
                 level="M"
                 bgColor="#FFFFFF"
                 fgColor="#1A0A00"
               />
             </div>
-            <p className="text-lg text-gold-200/30 mt-4 font-mono tracking-widest">{code}</p>
+            <p className="text-4xl text-gold-200/60 mt-4 font-mono tracking-widest">{code}</p>
           </div>
         )}
 

@@ -26,7 +26,9 @@ export function verifyParticipantToken(token: string): ParticipantPayload | null
 
 /** 驗證 admin key */
 export function verifyAdminKey(key: string | null): boolean {
-  return key === process.env.ADMIN_SECRET_KEY
+  const secret = process.env.ADMIN_SECRET_KEY
+  if (!secret || secret.length < 4) return false
+  return key === secret
 }
 
 /** 產生密碼學安全的活動代碼 */

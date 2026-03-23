@@ -67,8 +67,9 @@ export function useLiveSync(
       const data: LiveState = await res.json()
       failCountRef.current = 0 // 成功則重置失敗計數
 
-      // Change detection：用 round_id + status 判斷回合是否切換
-      const stateKey = `${data.current_round_id}|${data.current_round_status}`
+      // Change detection：用 round_id + status + event_status 判斷狀態是否切換
+      // Bug 2 fix: 加入 event_status，確保 'finished' 時觸發 callback
+      const stateKey = `${data.current_round_id}|${data.current_round_status}|${data.event_status}`
       if (stateKey !== lastStateRef.current) {
         lastStateRef.current = stateKey
         onRoundChangeRef.current(data)

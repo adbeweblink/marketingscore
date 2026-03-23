@@ -117,23 +117,31 @@ export function TableSelector({
         >
           <h2 className="text-xl font-bold text-white mb-2">你坐第幾桌？</h2>
           <p className="text-white/40 text-sm mb-6">看桌上的號碼牌，點對應的數字</p>
-          <div className="grid grid-cols-4 gap-3 mb-6">
-            {tables.map((table) => (
-              <motion.button
-                key={table.id}
-                whileTap={{ scale: 0.9 }}
-                onClick={() => setSelectedTable(table.id)}
-                className={cn(
-                  'py-5 rounded-2xl border-2 font-black text-2xl transition-all',
-                  selectedTable === table.id
-                    ? 'border-gold-400 bg-gold-400/20 text-gold-200 shadow-[0_0_20px_rgba(255,179,0,0.3)] scale-105'
-                    : 'border-white/10 bg-surface-card text-white/50 active:border-gold-400/50'
-                )}
-              >
-                {table.number}
-              </motion.button>
-            ))}
-          </div>
+          {/* Bug 9 fix: tables 為空時顯示載入中，不生假資料 */}
+          {tables.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-10 mb-6 text-white/40">
+              <div className="text-3xl mb-3 animate-spin">⏳</div>
+              <p className="text-sm">載入桌號中，請稍候...</p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-4 gap-3 mb-6">
+              {tables.map((table) => (
+                <motion.button
+                  key={table.id}
+                  whileTap={{ scale: 0.9 }}
+                  onClick={() => setSelectedTable(table.id)}
+                  className={cn(
+                    'py-5 rounded-2xl border-2 font-black text-2xl transition-all',
+                    selectedTable === table.id
+                      ? 'border-gold-400 bg-gold-400/20 text-gold-200 shadow-[0_0_20px_rgba(255,179,0,0.3)] scale-105'
+                      : 'border-white/10 bg-surface-card text-white/50 active:border-gold-400/50'
+                  )}
+                >
+                  {table.number}
+                </motion.button>
+              ))}
+            </div>
+          )}
 
           <div className="flex gap-3">
             <button

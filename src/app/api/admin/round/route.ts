@@ -30,10 +30,12 @@ export async function POST(request: NextRequest) {
         if (!round_id) return NextResponse.json({ error: '缺少 round_id' }, { status: 400 })
 
         // #19 fix: 一次 JOIN 取回 events(code) + tables(id)
+        // Bug 13 fix: 加 .eq('status', 'pending') 確保只在 pending 時才有效
         const { data: round, error } = await supabase
           .from('rounds')
           .update({ status: 'open', opened_at: new Date().toISOString() })
           .eq('id', round_id)
+          .eq('status', 'pending')
           .select('*, events(code, tables(id))')
           .single()
 
@@ -70,7 +72,12 @@ export async function POST(request: NextRequest) {
         if (error) return NextResponse.json({ error: '更新失敗' }, { status: 500 })
 
         // #3 fix: 用 RPC 一次完成排名計算，不再 N+1
-        await supabase.rpc('finalize_round_ranks', { p_round_id: round_id })
+        // Bug 4 fix: 檢查 error
+        const { error: rankError } = await supabase.rpc('finalize_round_ranks', { p_round_id: round_id })
+        if (rankError) {
+          console.error('[Admin/Round] finalize_round_ranks failed:', rankError)
+          return NextResponse.json({ success: true, round, warning: '排名計算失敗' })
+        }
 
         return NextResponse.json({ success: true, round })
       }
@@ -127,6 +134,23 @@ export async function POST(request: NextRequest) {
         if (!event_id) return NextResponse.json({ error: '缺少 event_id' }, { status: 400 })
 
         return NextResponse.json({ success: true, countdown: seconds })
+      }
+
+      case 'finalize': {
+        // Bug 2 fix: 把 event status 改成 'finished'，讓 display 切到 final mode
+        if (!event_id) return NextResponse.json({ error: '缺少 event_id' }, { status: 400 })
+
+        const { error: finalizeError } = await supabase
+          .from('events')
+          .update({ status: 'finished' })
+          .eq('id', event_id)
+
+        if (finalizeError) {
+          console.error('[Admin/Round] finalize failed:', finalizeError)
+          return NextResponse.json({ error: '結束活動失敗' }, { status: 500 })
+        }
+
+        return NextResponse.json({ success: true })
       }
 
       default:

@@ -108,6 +108,17 @@ export async function POST(request: NextRequest) {
       })
       if (cacheError) {
         console.error('[Vote] Cache update failed:', cacheError)
+        // 計算目前投票數（投票已記錄，但分數可能不同步）
+        const { count: currentVoteCount } = await supabase
+          .from('votes')
+          .select('id', { count: 'exact', head: true })
+          .eq('round_id', round_id)
+          .eq('is_valid', true)
+        return NextResponse.json({
+          success: true,
+          warning: '投票已記錄，分數更新中',
+          vote_count: currentVoteCount ?? 0,
+        })
       }
     }
 

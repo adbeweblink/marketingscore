@@ -193,10 +193,14 @@ export default function PlayPage({
   }, [phase, participant, eventInfo, tables, currentRound, code])
 
   // #7: 監聽 visibilitychange 重新同步狀態
+  // Bug 12 fix: 呼叫 syncNow() 同步回合狀態，不只拉排行榜
   useEffect(() => {
     const handleVisibility = async () => {
       if (document.visibilityState !== 'visible') return
       if (phase === 'join') return
+
+      // 同步回合狀態
+      syncNow()
 
       try {
         const res = await fetch(`/api/results?event_code=${code}`)
@@ -214,7 +218,7 @@ export default function PlayPage({
 
     document.addEventListener('visibilitychange', handleVisibility)
     return () => document.removeEventListener('visibilitychange', handleVisibility)
-  }, [phase, code, showToast])
+  }, [phase, code, showToast, syncNow])
 
   // 加入活動
   async function handleJoin(tableId: string, displayName: string) {
@@ -407,13 +411,7 @@ export default function PlayPage({
     <div className="min-h-screen bg-surface-dark">
       {phase === 'join' && (
         <TableSelector
-          tables={tables.length > 0 ? tables : Array.from({ length: 8 }, (_, i) => ({
-            id: String(i + 1),
-            event_id: '',
-            number: i + 1,
-            name: null,
-            created_at: '',
-          }))}
+          tables={tables.length > 0 ? tables : []}
           eventName={eventInfo?.name ?? `活動 ${code}`}
           onJoin={handleJoin}
           loading={loading}
@@ -491,6 +489,7 @@ export default function PlayPage({
             <div className="w-full max-w-sm mx-auto">
               {/* 進度 */}
               <div className="text-center mb-4">
+                <p className="text-gold-200/80 text-base font-bold mb-1">👆 點任一桌號，為他們打分！</p>
                 <span className="text-white/40 text-sm">
                   已評 {tableScores.filter((ts) => ts.submitted).length} / {tableScores.length} 桌
                 </span>
