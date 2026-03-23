@@ -15,6 +15,8 @@ interface QuizOptionsProps {
   options: QuizOption[]
   onSubmit: (selectedId: string) => void
   disabled?: boolean
+  /** 選即送：選取後直接呼叫 onSubmit，不需按確認按鈕 */
+  autoSubmit?: boolean
 }
 
 export function QuizOptions({
@@ -22,9 +24,19 @@ export function QuizOptions({
   options,
   onSubmit,
   disabled = false,
+  autoSubmit = false,
 }: QuizOptionsProps) {
   const [selected, setSelected] = useState<string | null>(null)
   const [submitted, setSubmitted] = useState(false)
+
+  function handleSelect(id: string) {
+    if (disabled || submitted || options.find(o => o.id === id)?.disabled) return
+    setSelected(id)
+    if (autoSubmit) {
+      setSubmitted(true)
+      onSubmit(id)
+    }
+  }
 
   function handleSubmit() {
     if (!selected || disabled || submitted) return
@@ -71,8 +83,8 @@ export function QuizOptions({
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: index * 0.08 }}
             whileTap={option.disabled ? {} : { scale: 0.93 }}
-            onClick={() => !option.disabled && setSelected(option.id)}
-            disabled={disabled || option.disabled}
+            onClick={() => handleSelect(option.id)}
+            disabled={disabled || option.disabled || submitted}
             className={cn(
               'relative py-6 px-4 rounded-2xl border-2 text-center transition-all',
               'font-bold text-lg',
@@ -98,20 +110,22 @@ export function QuizOptions({
         ))}
       </div>
 
-      {/* 送出 */}
-      <motion.button
-        onClick={handleSubmit}
-        disabled={!selected || disabled}
-        whileTap={{ scale: 0.95 }}
-        className={cn(
-          'w-full py-4 rounded-2xl text-lg font-bold transition-all',
-          selected
-            ? 'bg-gradient-to-r from-gold-600 to-gold-400 text-surface-dark shadow-[0_0_20px_rgba(255,179,0,0.3)]'
-            : 'bg-surface-elevated text-white/20'
-        )}
-      >
-        {selected ? '確認送出 ✓' : '👆 先選一個答案'}
-      </motion.button>
+      {/* 送出（autoSubmit 模式下隱藏） */}
+      {!autoSubmit && (
+        <motion.button
+          onClick={handleSubmit}
+          disabled={!selected || disabled}
+          whileTap={{ scale: 0.95 }}
+          className={cn(
+            'w-full py-4 rounded-2xl text-lg font-bold transition-all',
+            selected
+              ? 'bg-gradient-to-r from-gold-600 to-gold-400 text-surface-dark shadow-[0_0_20px_rgba(255,179,0,0.3)]'
+              : 'bg-surface-elevated text-white/20'
+          )}
+        >
+          {selected ? '確認送出 ✓' : '👆 先選一個答案'}
+        </motion.button>
+      )}
     </div>
   )
 }

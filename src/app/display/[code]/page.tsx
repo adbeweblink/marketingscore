@@ -31,6 +31,8 @@ export default function DisplayPage({
   const [connStatus, setConnStatus] = useState<ConnectionStatus>('connected')
   const fallbackPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const lastRealtimeRef = useRef<number>(Date.now())
+  // #6 debounce：記錄上次 fetch 時間，防止 handleResultsDBChange / handleRoundStatusChange 同時觸發
+  const lastFetchRef = useRef<number>(0)
 
   const { entries, setEntries, updateScore } = useLeaderboardStore()
   const { currentRound, setCurrentRound, countdown, setCountdown, tick } = useRoundStore()
@@ -84,10 +86,8 @@ export default function DisplayPage({
   }, [code, setEntries])
 
   useEffect(() => {
-    // 啟動 fallback polling（每 5 秒）
-    fallbackPollRef.current = setInterval(async () => {
-      await fetchLatestResults()
-      // 若超過 10 秒沒收到 realtime 訊號，視為斷線
+    // 每 10 秒監控 realtime 活躍狀態（不主動 fetch，只更新連線指示）
+    const connCheckRef = setInterval(() => {
       const elapsed = Date.now() - lastRealtimeRef.current
       if (elapsed > 10000) {
         setConnStatus('disconnected')
@@ -96,13 +96,28 @@ export default function DisplayPage({
       }
     }, 5000)
 
+    return () => clearInterval(connCheckRef)
+  }, [])
+
+  // #5 Fallback polling：只在斷線或 voting/reveal 模式才啟動
+  useEffect(() => {
+    if (fallbackPollRef.current) {
+      clearInterval(fallbackPollRef.current)
+      fallbackPollRef.current = null
+    }
+
+    const shouldPoll = connStatus === 'disconnected' || mode === 'voting' || mode === 'reveal'
+    if (!shouldPoll) return
+
+    fallbackPollRef.current = setInterval(fetchLatestResults, 5000)
+
     return () => {
       if (fallbackPollRef.current) {
         clearInterval(fallbackPollRef.current)
         fallbackPollRef.current = null
       }
     }
-  }, [fetchLatestResults])
+  }, [connStatus, mode, fetchLatestResults])
 
   // ─── Broadcast 事件處理（維持相容性，同時接受 broadcast）──────
 
@@ -194,6 +209,10 @@ export default function DisplayPage({
   const handleResultsDBChange = useCallback((_payload: RealtimeDBPayload) => {
     lastRealtimeRef.current = Date.now()
     setConnStatus('connected')
+    // #6 debounce：300ms 內不重複 fetch
+    const now = Date.now()
+    if (now - lastFetchRef.current < 300) return
+    lastFetchRef.current = now
     // DB 有變化時，重新拉取最新排行榜（直接查 API 最簡單，避免前端組裝邏輯）
     fetch(`/api/results?event_code=${code}`)
       .then((r) => r.json())
@@ -212,6 +231,10 @@ export default function DisplayPage({
     setConnStatus('connected')
     console.log(`[Display] DB 回合狀態變更: ${roundId} → ${newStatus}`)
     if (newStatus === 'open') {
+      // #6 debounce：300ms 內不重複 fetch
+      const now = Date.now()
+      if (now - lastFetchRef.current < 300) return
+      lastFetchRef.current = now
       // 拉取最新回合資訊
       fetch(`/api/results?event_code=${code}`)
         .then((r) => r.json())

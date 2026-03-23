@@ -47,7 +47,6 @@ function HostControlInner({
   const [tables, setTables] = useState<Table[]>([])
   const [activeRound, setActiveRound] = useState<string | null>(null)
   const [voteProgress, setVoteProgress] = useState({ voted: 0, total: 0 })
-  const [participantCount, setParticipantCount] = useState<number>(0)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [actionLoading, setActionLoading] = useState(false)
@@ -93,7 +92,6 @@ function HostControlInner({
       setRounds(data.rounds ?? [])
       setTables(data.tables ?? [])
       const count = data.participant_count ?? 0
-      setParticipantCount(count)
       setVoteProgress((prev) => ({ ...prev, total: count }))
 
       // 找出目前正在進行的回合
@@ -117,7 +115,6 @@ function HostControlInner({
       const data = await res.json()
       // 同時更新參與人數（防止有人中途加入）
       if (data.participant_count !== undefined) {
-        setParticipantCount(data.participant_count)
         setVoteProgress((prev) => ({ ...prev, total: data.participant_count }))
       }
       // results API 回傳 vote_count 總數
@@ -310,7 +307,7 @@ function HostControlInner({
   // ─── #5 複製控制台連結 ───────────────────────────────────────────
   async function handleCopyControlLink() {
     try {
-      await navigator.clipboard.writeText(typeof window !== 'undefined' ? window.location.href : '')
+      await navigator.clipboard.writeText(window.location.href)
       setCopiedControl(true)
       setTimeout(() => setCopiedControl(false), 2000)
     } catch {
@@ -392,7 +389,7 @@ function HostControlInner({
           <div className="flex items-center gap-2">
             <Users size={16} className="text-gold-400" />
             <span className="text-white/60 text-sm">已加入</span>
-            <span className="text-gold-200 font-bold text-lg tabular-nums">{participantCount}</span>
+            <span className="text-gold-200 font-bold text-lg tabular-nums">{voteProgress.total}</span>
             <span className="text-white/30 text-sm">人</span>
           </div>
           <button

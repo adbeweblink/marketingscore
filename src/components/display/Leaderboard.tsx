@@ -2,6 +2,7 @@
 
 import { motion, AnimatePresence } from 'framer-motion'
 import { cn, formatScore } from '@/lib/utils'
+import { RANK_EMOJI } from '@/lib/constants'
 import type { ScoreBoard } from '@/types/database'
 
 interface LeaderboardProps {
@@ -21,11 +22,6 @@ const RANK_STYLES: Record<number, string> = {
   3: 'bg-gradient-to-r from-amber-700/30 to-amber-600/10 border-amber-600/40 text-amber-200',
 }
 
-const RANK_EMOJI: Record<number, string> = {
-  1: '👑',
-  2: '🥈',
-  3: '🥉',
-}
 
 export function Leaderboard({
   entries,

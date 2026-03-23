@@ -7,7 +7,6 @@ import { cn } from '@/lib/utils'
 interface ScoreSliderProps {
   min?: number
   max?: number
-  targetName?: string
   onSubmit: (score: number) => void
   disabled?: boolean
 }
@@ -15,7 +14,6 @@ interface ScoreSliderProps {
 export function ScoreSlider({
   min = 1,
   max = 10,
-  targetName,
   onSubmit,
   disabled = false,
 }: ScoreSliderProps) {

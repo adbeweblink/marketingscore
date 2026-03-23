@@ -3,8 +3,11 @@
 import { useState, useCallback, useRef, useEffect } from 'react'
 import { use } from 'react'
 import { TableSelector } from '@/components/play/TableSelector'
+import { QuizOptions } from '@/components/play/QuizOptions'
 import { useRealtimeMulti, useRealtimeDB, type RealtimeDBPayload } from '@/hooks/useRealtime'
 import { CHANNELS } from '@/lib/channels'
+import { cn } from '@/lib/utils'
+import { RANK_EMOJI } from '@/lib/constants'
 import type { Table, Round, RoundStatus, ScoreBoard } from '@/types/database'
 
 type PlayPhase = 'join' | 'waiting' | 'voting' | 'submitted' | 'result'
@@ -46,6 +49,7 @@ export default function PlayPage({
   params: Promise<{ code: string }>
 }) {
   const { code } = use(params)
+  const SESSION_KEY = `ms_participant_${code}`
   const [phase, setPhase] = useState<PlayPhase>('join')
   const [participant, setParticipant] = useState<ParticipantInfo | null>(null)
   const [eventInfo, setEventInfo] = useState<EventInfo | null>(null)
@@ -122,7 +126,7 @@ export default function PlayPage({
 
   // #12: 頁面載入時從 sessionStorage 還原
   useEffect(() => {
-    const stored = sessionStorage.getItem(`ms_participant_${code}`)
+    const stored = sessionStorage.getItem(SESSION_KEY)
     if (!stored) return
     try {
       const session: StoredSession = JSON.parse(stored)
@@ -139,7 +143,7 @@ export default function PlayPage({
       setPhase(restoredPhase)
       showToast('已自動恢復上次連線')
     } catch {
-      sessionStorage.removeItem(`ms_participant_${code}`)
+      sessionStorage.removeItem(SESSION_KEY)
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [code])
@@ -155,7 +159,7 @@ export default function PlayPage({
       phase,
       currentRound,
     }
-    sessionStorage.setItem(`ms_participant_${code}`, JSON.stringify(session))
+    sessionStorage.setItem(SESSION_KEY, JSON.stringify(session))
   }, [phase, participant, eventInfo, tables, currentRound, code])
 
   // #7: 監聽 visibilitychange 重新同步狀態
@@ -263,6 +267,12 @@ export default function PlayPage({
   async function handleQuickScore(tableId: string, score: number) {
     if (!participant || !currentRound || !tokenRef.current) return
 
+    const rollbackScore = () => {
+      setTableScores((prev) =>
+        prev.map((ts) => ts.tableId === tableId ? { ...ts, score: null, submitted: false } : ts)
+      )
+    }
+
     // 先標記為已送出
     setTableScores((prev) =>
       prev.map((ts) => ts.tableId === tableId ? { ...ts, score, submitted: true } : ts)
@@ -286,16 +296,11 @@ export default function PlayPage({
       if (!res.ok) {
         const data = await res.json()
         setError(data.error ?? '評分失敗')
-        // 回滾
-        setTableScores((prev) =>
-          prev.map((ts) => ts.tableId === tableId ? { ...ts, score: null, submitted: false } : ts)
-        )
+        rollbackScore()
       }
     } catch {
       setError('評分失敗，請重試')
-      setTableScores((prev) =>
-        prev.map((ts) => ts.tableId === tableId ? { ...ts, score: null, submitted: false } : ts)
-      )
+      rollbackScore()
     }
   }
 
@@ -375,12 +380,58 @@ export default function PlayPage({
   )
 
   // ─── #11: 找到自己桌的排行榜位置 ────────────────────────────────
-  const myRankEntry = leaderboard.find(
-    (entry) => participant && entry.entity_id === participant.table_id
-  )
-  const myRank = leaderboard.findIndex(
-    (entry) => participant && entry.entity_id === participant.table_id
-  )
+  const myRank = leaderboard.findIndex(e => participant && e.entity_id === participant.table_id)
+  const myRankEntry = myRank >= 0 ? leaderboard[myRank] : undefined
+
+  // ─── #11: 評分制彈出面板（IIFE 提取為變數）─────────────────────
+  const scoringPanel = (() => {
+    if (!scoringActiveTable || !currentRound) return null
+    const activeTs = tableScores.find((ts) => ts.tableId === scoringActiveTable)
+    if (!activeTs) return null
+    const min = currentRound.config?.scale_min ?? 1
+    const max = currentRound.config?.scale_max ?? 10
+    return (
+      <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/60 backdrop-blur-sm"
+        onClick={() => setScoringActiveTable(null)}
+      >
+        <div
+          className="w-full max-w-sm bg-surface-card rounded-t-3xl p-6 pb-10 border border-white/10"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="text-center mb-4">
+            <p className="text-white/50 text-sm mb-1">為</p>
+            <p className="text-gold-200 text-xl font-bold">第 {activeTs.tableNumber} 桌</p>
+            <p className="text-white/50 text-sm mt-1">打幾分？</p>
+          </div>
+
+          {/* 快速數字按鈕 */}
+          <div className="grid grid-cols-5 gap-2 mb-5">
+            {Array.from({ length: max - min + 1 }, (_, i) => min + i).map((v) => (
+              <button
+                key={v}
+                onClick={() => setPendingScore(v)}
+                className={cn(
+                  'py-3 rounded-xl text-lg font-black border transition-all',
+                  pendingScore === v
+                    ? 'bg-gold-400 text-surface-dark border-gold-400 shadow-[0_0_12px_rgba(255,179,0,0.5)]'
+                    : 'bg-surface-elevated border-white/10 text-white/70',
+                )}
+              >
+                {v}
+              </button>
+            ))}
+          </div>
+
+          <button
+            onClick={() => handleQuickScore(scoringActiveTable, pendingScore)}
+            className="w-full py-4 rounded-xl font-bold text-lg bg-gradient-to-r from-gold-600 to-gold-400 text-surface-dark shadow-[0_0_15px_rgba(255,179,0,0.3)]"
+          >
+            送出 {pendingScore} 分
+          </button>
+        </div>
+      </div>
+    )
+  })()
 
   return (
     <div className="min-h-screen bg-surface-dark">
@@ -472,14 +523,14 @@ export default function PlayPage({
                       setScoringActiveTable(ts.tableId)
                       setPendingScore(Math.ceil(((currentRound.config?.scale_min ?? 1) + (currentRound.config?.scale_max ?? 10)) / 2))
                     }}
-                    className={[
+                    className={cn(
                       'py-4 rounded-xl text-center transition-all font-bold text-lg border',
                       ts.submitted
                         ? 'bg-green-900/30 border-green-500/40 text-green-400 cursor-default'
                         : scoringActiveTable === ts.tableId
                           ? 'bg-gold-400/20 border-gold-400/60 text-gold-200'
                           : 'bg-surface-card border-white/10 text-white/80 active:scale-95',
-                    ].join(' ')}
+                    )}
                   >
                     {ts.submitted ? (
                       <span className="flex flex-col items-center gap-1">
@@ -496,59 +547,13 @@ export default function PlayPage({
               </div>
 
               {/* 彈出評分區塊 */}
-              {scoringActiveTable && (() => {
-                const activeTs = tableScores.find((ts) => ts.tableId === scoringActiveTable)
-                if (!activeTs) return null
-                const min = currentRound.config?.scale_min ?? 1
-                const max = currentRound.config?.scale_max ?? 10
-                return (
-                  <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/60 backdrop-blur-sm"
-                    onClick={() => setScoringActiveTable(null)}
-                  >
-                    <div
-                      className="w-full max-w-sm bg-surface-card rounded-t-3xl p-6 pb-10 border border-white/10"
-                      onClick={(e) => e.stopPropagation()}
-                    >
-                      <div className="text-center mb-4">
-                        <p className="text-white/50 text-sm mb-1">為</p>
-                        <p className="text-gold-200 text-xl font-bold">第 {activeTs.tableNumber} 桌</p>
-                        <p className="text-white/50 text-sm mt-1">打幾分？</p>
-                      </div>
-
-                      {/* 快速數字按鈕 */}
-                      <div className="grid grid-cols-5 gap-2 mb-5">
-                        {Array.from({ length: max - min + 1 }, (_, i) => min + i).map((v) => (
-                          <button
-                            key={v}
-                            onClick={() => setPendingScore(v)}
-                            className={[
-                              'py-3 rounded-xl text-lg font-black border transition-all',
-                              pendingScore === v
-                                ? 'bg-gold-400 text-surface-dark border-gold-400 shadow-[0_0_12px_rgba(255,179,0,0.5)]'
-                                : 'bg-surface-elevated border-white/10 text-white/70',
-                            ].join(' ')}
-                          >
-                            {v}
-                          </button>
-                        ))}
-                      </div>
-
-                      <button
-                        onClick={() => handleQuickScore(scoringActiveTable, pendingScore)}
-                        className="w-full py-4 rounded-xl font-bold text-lg bg-gradient-to-r from-gold-600 to-gold-400 text-surface-dark shadow-[0_0_15px_rgba(255,179,0,0.3)]"
-                      >
-                        送出 {pendingScore} 分
-                      </button>
-                    </div>
-                  </div>
-                )
-              })()}
+              {scoringPanel}
             </div>
           )}
 
-          {/* 猜謎制（不變） */}
+          {/* 猜謎制 */}
           {currentRound.type_id === 'quiz' && (
-            <QuizOptionsInline
+            <QuizOptions
               question={currentRound.config?.question ?? '猜猜這是哪一桌？'}
               options={tables.map((t) => ({
                 id: t.id,
@@ -556,6 +561,7 @@ export default function PlayPage({
                 disabled: t.number === participant?.table_number,
               }))}
               onSubmit={(selectedId) => handleVote(selectedId, undefined, selectedId)}
+              autoSubmit
             />
           )}
 
@@ -618,18 +624,18 @@ export default function PlayPage({
               {leaderboard.map((entry, idx) => {
                 const rank = idx + 1
                 const isMyTable = participant && entry.entity_id === participant.table_id
-                const rankEmoji = rank === 1 ? '👑' : rank === 2 ? '🥈' : rank === 3 ? '🥉' : `#${rank}`
+                const rankEmoji = RANK_EMOJI[rank] ?? `#${rank}`
                 return (
                   <div
                     key={entry.entity_id}
-                    className={[
+                    className={cn(
                       'flex items-center gap-3 px-4 py-3 rounded-xl border',
                       isMyTable
                         ? 'bg-gold-400/15 border-gold-400/50'
                         : rank <= 3
                           ? 'bg-white/8 border-white/15'
                           : 'bg-surface-card border-white/8',
-                    ].join(' ')}
+                    )}
                   >
                     <span className="w-10 text-center text-2xl font-black flex-shrink-0">
                       {rankEmoji}
@@ -673,53 +679,3 @@ export default function PlayPage({
   )
 }
 
-// ─── 內嵌猜謎選項元件（避免 import QuizOptions 需要調整 prop 型別）──────
-interface QuizOption { id: string; label: string; disabled?: boolean }
-
-function QuizOptionsInline({
-  question,
-  options,
-  onSubmit,
-}: {
-  question: string
-  options: QuizOption[]
-  onSubmit: (id: string) => void
-}) {
-  const [selected, setSelected] = useState<string | null>(null)
-  const [submitted, setSubmitted] = useState(false)
-
-  function handleSelect(id: string) {
-    if (submitted) return
-    setSelected(id)
-    setSubmitted(true)
-    onSubmit(id)
-  }
-
-  return (
-    <div className="w-full max-w-sm mx-auto">
-      <p className="text-white/80 text-base font-medium text-center mb-6">{question}</p>
-      <div className="grid grid-cols-2 gap-3">
-        {options.map((opt) => (
-          <button
-            key={opt.id}
-            onClick={() => !opt.disabled && handleSelect(opt.id)}
-            disabled={opt.disabled || submitted}
-            className={[
-              'py-4 rounded-xl font-bold text-base border transition-all',
-              opt.disabled
-                ? 'opacity-30 cursor-not-allowed bg-surface-card border-white/5 text-white/40'
-                : selected === opt.id
-                  ? 'bg-gold-400/30 border-gold-400/60 text-gold-200'
-                  : 'bg-surface-card border-white/10 text-white/80 active:scale-95',
-            ].join(' ')}
-          >
-            {opt.label}
-          </button>
-        ))}
-      </div>
-      {submitted && (
-        <p className="text-center text-green-400 text-sm mt-4">✓ 已送出</p>
-      )}
-    </div>
-  )
-}
