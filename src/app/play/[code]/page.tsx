@@ -5,7 +5,7 @@ import { use } from 'react'
 import { TableSelector } from '@/components/play/TableSelector'
 import { ScoreSlider } from '@/components/play/ScoreSlider'
 import { QuizOptions } from '@/components/play/QuizOptions'
-import { useRealtimeMulti } from '@/hooks/useRealtime'
+import { useRealtimeMulti, useRealtimeDB, type RealtimeDBPayload } from '@/hooks/useRealtime'
 import { CHANNELS } from '@/lib/channels'
 import type { Table, Round, RoundStatus } from '@/types/database'
 
@@ -37,7 +37,7 @@ export default function PlayPage({
   const [currentRound, setCurrentRound] = useState<Round | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  // #1 fix: 儲存 JWT token
+  // 儲存 JWT token
   const tokenRef = useRef<string | null>(null)
 
   // 加入活動
@@ -87,7 +87,7 @@ export default function PlayPage({
     }
   }
 
-  // #13 fix: handleVote 帶上 target_table_id / target_group_id
+  // 投票
   async function handleVote(targetTableId?: string, score?: number, answer?: string) {
     if (!participant || !currentRound || !tokenRef.current) return
 
@@ -96,7 +96,7 @@ export default function PlayPage({
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${tokenRef.current}`, // #1 fix: 用 JWT
+          'Authorization': `Bearer ${tokenRef.current}`,
         },
         body: JSON.stringify({
           round_id: currentRound.id,
@@ -117,7 +117,9 @@ export default function PlayPage({
     }
   }
 
-  // Realtime 事件（#11 fix: 用 CHANNELS 常數）
+  // ─── Broadcast 事件處理（維持相容性）──────────────────────────
+
+  // 回合狀態變更（broadcast 來源）
   const handleStatusChange = useCallback((payload: Record<string, unknown>) => {
     try {
       const data = payload as { status?: RoundStatus; round?: Round }
@@ -132,6 +134,7 @@ export default function PlayPage({
     }
   }, [])
 
+  // 主持人指令（broadcast 來源）
   const handleCommand = useCallback((payload: Record<string, unknown>) => {
     try {
       const data = payload as { action?: string; round?: Round }
@@ -144,10 +147,43 @@ export default function PlayPage({
     }
   }, [])
 
+  // 訂閱 broadcast channel（相容舊版）
   useRealtimeMulti(CHANNELS.roundStatus(code), {
     status_change: handleStatusChange,
     command: handleCommand,
   })
+
+  // ─── DB 層直接訂閱：rounds 表狀態變更 ───────────────────────────
+  // 當 rounds 狀態改變時，手機端自動切換投票/等待畫面
+  useRealtimeDB<{ id: string; status: RoundStatus; event_id: string }>(
+    'rounds',
+    // 已加入活動後才訂閱（依 event_id 過濾）
+    eventInfo?.id ? `event_id=eq.${eventInfo.id}` : undefined,
+    undefined, // INSERT 不處理
+    useCallback((payload: RealtimeDBPayload<{ id: string; status: RoundStatus; event_id: string }>) => {
+      // UPDATE 觸發（回合狀態改變）
+      const newStatus = payload.new?.status
+      if (!newStatus) return
+
+      if (newStatus === 'open') {
+        // 回合開始，拉取最新回合資料
+        if (eventInfo?.id) {
+          fetch(`/api/results?event_code=${code}`)
+            .then((r) => r.json())
+            .then((data) => {
+              if (data.current_round) {
+                setCurrentRound(data.current_round)
+                setPhase('voting')
+              }
+            })
+            .catch(() => { /* 靜默忽略 */ })
+        }
+      } else if (newStatus === 'closed' || newStatus === 'revealed') {
+        // 回合結束或揭曉，顯示結果畫面
+        setPhase('result')
+      }
+    }, [code, eventInfo?.id])
+  )
 
   return (
     <div className="min-h-screen bg-surface-dark">
@@ -186,7 +222,7 @@ export default function PlayPage({
             </h2>
           </div>
 
-          {/* #13 fix: ScoreSlider 需要讓用戶選桌再評分 — MVP 暫用列表 */}
+          {/* 評分制 */}
           {currentRound.type_id === 'scoring' && (
             <div className="w-full max-w-sm mx-auto space-y-4">
               {tables.filter(t => t.number !== participant?.table_number).map(t => (
@@ -202,6 +238,7 @@ export default function PlayPage({
             </div>
           )}
 
+          {/* 猜謎制 */}
           {currentRound.type_id === 'quiz' && (
             <QuizOptions
               question={currentRound.config?.question ?? '猜猜這是哪一桌？'}
@@ -214,6 +251,7 @@ export default function PlayPage({
             />
           )}
 
+          {/* 歡呼制 */}
           {currentRound.type_id === 'cheer' && (
             <div className="text-center py-8">
               <div className="text-6xl mb-4">&#128079;</div>

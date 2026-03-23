@@ -5,7 +5,7 @@ import { use } from 'react'
 import { ParticleBackground } from '@/components/display/ParticleBackground'
 import { Leaderboard } from '@/components/display/Leaderboard'
 import { ScoreCounter } from '@/components/display/ScoreCounter'
-import { useRealtimeMulti } from '@/hooks/useRealtime'
+import { useRealtimeMulti, useEventRealtimeDB, type RealtimeDBPayload } from '@/hooks/useRealtime'
 import { useLeaderboardStore } from '@/hooks/useLeaderboard'
 import { useRoundStore } from '@/hooks/useRound'
 import { CHANNELS } from '@/lib/channels'
@@ -21,6 +21,7 @@ export default function DisplayPage({
   const { code } = use(params)
   const [mode, setMode] = useState<DisplayMode>('idle')
   const [eventName, setEventName] = useState('MarketingScore')
+  const [eventId, setEventId] = useState<string | undefined>(undefined)
   const [voteProgress, setVoteProgress] = useState({ voted: 0, total: 0 })
   const [particleIntensity, setParticleIntensity] = useState<'low' | 'normal' | 'high' | 'celebration'>('low')
 
@@ -34,9 +35,43 @@ export default function DisplayPage({
     return () => clearInterval(timer)
   }, [countdown, tick])
 
-  // Realtime 事件處理
+  // ─── 初始化：透過活動代碼取得 event_id（供 DB 訂閱過濾） ──────
+  useEffect(() => {
+    async function fetchEventId() {
+      try {
+        const res = await fetch(`/api/results?event_code=${code}`)
+        if (res.ok) {
+          const data = await res.json()
+          if (data.event_id) {
+            setEventId(data.event_id)
+          }
+          if (data.event_name) {
+            setEventName(data.event_name)
+          }
+          // 若有初始排行榜資料
+          if (data.rankings) {
+            setEntries(data.rankings)
+          }
+        }
+      } catch {
+        // 初始化失敗不影響後續 realtime 訂閱
+      }
+    }
+    fetchEventId()
+  }, [code, setEntries])
+
+  // ─── Broadcast 事件處理（維持相容性，同時接受 broadcast）──────
+
+  // 分數更新（broadcast 來源）
   const handleScoreUpdate = useCallback((payload: Record<string, unknown>) => {
-    const data = payload as { rankings?: ScoreBoard[]; entity_id?: string; round_id?: string; score?: number; voted?: number; total?: number }
+    const data = payload as {
+      rankings?: ScoreBoard[]
+      entity_id?: string
+      round_id?: string
+      score?: number
+      voted?: number
+      total?: number
+    }
     if (data.rankings) {
       setEntries(data.rankings)
     }
@@ -48,6 +83,7 @@ export default function DisplayPage({
     }
   }, [setEntries, updateScore])
 
+  // 回合狀態變更（broadcast 來源）
   const handleStatusChange = useCallback((payload: Record<string, unknown>) => {
     const data = payload as { status?: RoundStatus; round?: Record<string, unknown> }
     if (data.status === 'open') {
@@ -62,39 +98,88 @@ export default function DisplayPage({
     }
   }, [])
 
+  // 主持人指令（broadcast 來源）
   const handleCommand = useCallback((payload: Record<string, unknown>) => {
     try {
-    const data = payload as { action?: string; round?: Round; countdown?: number; event_name?: string }
-    switch (data.action) {
-      case 'show_idle':
-        setMode('idle')
-        setParticleIntensity('low')
-        break
-      case 'show_round_intro':
-        setMode('round-intro')
-        setParticleIntensity('normal')
-        if (data.round) setCurrentRound(data.round) // #24 fix: 移除 as never
-        break
-      case 'start_countdown':
-        if (data.countdown) setCountdown(data.countdown)
-        break
-      case 'show_final':
-        setMode('final')
-        setParticleIntensity('celebration')
-        break
-      case 'init':
-        if (data.event_name) setEventName(data.event_name)
-        break
-    }
+      const data = payload as {
+        action?: string
+        round?: Round
+        countdown?: number
+        event_name?: string
+      }
+      switch (data.action) {
+        case 'show_idle':
+          setMode('idle')
+          setParticleIntensity('low')
+          break
+        case 'show_round_intro':
+          setMode('round-intro')
+          setParticleIntensity('normal')
+          if (data.round) setCurrentRound(data.round)
+          break
+        case 'start_countdown':
+          if (data.countdown) setCountdown(data.countdown)
+          break
+        case 'show_final':
+          setMode('final')
+          setParticleIntensity('celebration')
+          break
+        case 'init':
+          if (data.event_name) setEventName(data.event_name)
+          break
+      }
     } catch { /* payload 解析錯誤不 crash */ }
   }, [setCurrentRound, setCountdown])
 
-  // #11 fix: 使用統一 channel 名稱
+  // 訂閱 broadcast channel（相容舊版廣播）
   useRealtimeMulti(CHANNELS.scores(code), {
     score_update: handleScoreUpdate,
     status_change: handleStatusChange,
     command: handleCommand,
   })
+
+  // ─── DB 層直接訂閱（postgres_changes）──────────────────────────
+
+  // results_cache 更新 → 大螢幕即時分數
+  const handleResultsDBChange = useCallback((_payload: RealtimeDBPayload) => {
+    // DB 有變化時，重新拉取最新排行榜（直接查 API 最簡單，避免前端組裝邏輯）
+    fetch(`/api/results?event_code=${code}`)
+      .then((r) => r.json())
+      .then((data) => {
+        if (data.rankings) setEntries(data.rankings)
+        if (data.voted !== undefined && data.total !== undefined) {
+          setVoteProgress({ voted: data.voted, total: data.total })
+        }
+      })
+      .catch(() => { /* 靜默忽略 */ })
+  }, [code, setEntries])
+
+  // rounds 狀態變更 → 大螢幕自動切換畫面
+  const handleRoundStatusChange = useCallback((newStatus: RoundStatus, roundId: string) => {
+    console.log(`[Display] DB 回合狀態變更: ${roundId} → ${newStatus}`)
+    if (newStatus === 'open') {
+      // 拉取最新回合資訊
+      fetch(`/api/results?event_code=${code}`)
+        .then((r) => r.json())
+        .then((data) => {
+          if (data.current_round) {
+            setCurrentRound(data.current_round)
+          }
+        })
+        .catch(() => { /* 靜默忽略 */ })
+      setMode('voting')
+      setParticleIntensity('normal')
+    } else if (newStatus === 'closed') {
+      setMode('counting')
+      setParticleIntensity('high')
+    } else if (newStatus === 'revealed') {
+      setMode('reveal')
+      setParticleIntensity('celebration')
+    }
+  }, [code, setCurrentRound])
+
+  // 啟用 DB 直接訂閱
+  useEventRealtimeDB(eventId, handleResultsDBChange, handleRoundStatusChange)
 
   return (
     <div className="min-h-screen w-screen theme-golden overflow-hidden relative">
