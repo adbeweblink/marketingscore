@@ -4,11 +4,10 @@ import { useState, useCallback, useRef, useEffect } from 'react'
 import { use } from 'react'
 import { TableSelector } from '@/components/play/TableSelector'
 import { QuizOptions } from '@/components/play/QuizOptions'
-import { useRealtimeMulti, useRealtimeDB, type RealtimeDBPayload } from '@/hooks/useRealtime'
-import { CHANNELS } from '@/lib/channels'
+import { useLiveSync, type LiveState } from '@/hooks/useLiveSync'
 import { cn } from '@/lib/utils'
 import { RANK_EMOJI } from '@/lib/constants'
-import type { Table, Round, RoundStatus, ScoreBoard } from '@/types/database'
+import type { Table, Round, ScoreBoard } from '@/types/database'
 
 type PlayPhase = 'join' | 'waiting' | 'voting' | 'submitted' | 'result'
 
@@ -87,54 +86,35 @@ export default function PlayPage({
     }
   }, [code])
 
-  // 回合狀態 polling（Realtime 的 fallback，每 3 秒查一次）
-  const roundPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
-  const lastKnownRoundStatus = useRef<string | null>(null)
-
   // 同步 phaseRef
   useEffect(() => { phaseRef.current = phase }, [phase])
 
-  const pollRoundStatus = useCallback(async () => {
-    if (!eventInfo?.id) return
-    try {
-      const res = await fetch(`/api/events/${code}/status`)
-      if (!res.ok) return
-      const data = await res.json()
-      const rounds: Round[] = data.rounds ?? []
+  // useLiveSync：1 秒 polling，偵測回合狀態變化
+  const handleRoundChange = useCallback((data: LiveState) => {
+    const currentPhase = phaseRef.current
+    const openRound = data.rounds.find((r) => r.status === 'open')
+    const revealedRound = data.rounds.find((r) => r.status === 'revealed')
 
-      const openRound = rounds.find((r: Round) => r.status === 'open')
-      const currentStatus = openRound ? 'open' : rounds.find((r: Round) => r.status === 'revealed') ? 'revealed' : 'idle'
-
-      // 只在狀態真的改變時才更新（用 ref 避免 stale closure）
-      if (currentStatus !== lastKnownRoundStatus.current) {
-        lastKnownRoundStatus.current = currentStatus
-        const currentPhase = phaseRef.current
-
-        if (openRound && currentPhase !== 'voting') {
-          setCurrentRound(openRound)
-          setPhase('voting')
-        } else if (currentStatus === 'revealed' && (currentPhase === 'voting' || currentPhase === 'submitted')) {
-          setPhase('result')
-        }
-      }
-    } catch {
-      // 靜默忽略
+    if (openRound && currentPhase !== 'voting') {
+      // 轉換為完整 Round 型別（useLiveSync 的 LiveState 已包含所有欄位）
+      setCurrentRound(openRound as unknown as Round)
+      setPhase('voting')
+    } else if (revealedRound && (currentPhase === 'voting' || currentPhase === 'submitted')) {
+      setPhase('result')
     }
-  }, [eventInfo?.id, code]) // 移除 phase，用 phaseRef 代替
+  }, [])
 
-  useEffect(() => {
-    const shouldPoll = phase === 'waiting' || phase === 'submitted' || phase === 'voting'
-    if (shouldPoll && eventInfo?.id) {
-      pollRoundStatus()
-      roundPollRef.current = setInterval(pollRoundStatus, 3000)
+  const { syncNow } = useLiveSync(
+    code,
+    handleRoundChange,
+    // 手機端不需要處理 vote_count（不顯示投票進度條），傳空函式
+    useCallback(() => { /* 手機端不使用投票進度 */ }, []),
+    {
+      // 只在加入後才啟動 polling（join phase 不需要）
+      enabled: phase !== 'join',
+      intervalMs: 1000,
     }
-    return () => {
-      if (roundPollRef.current) {
-        clearInterval(roundPollRef.current)
-        roundPollRef.current = null
-      }
-    }
-  }, [phase, eventInfo?.id, pollRoundStatus])
+  )
 
   // #11: 每 5 秒更新排行榜（waiting / submitted phase 才跑）
   useEffect(() => {
@@ -369,69 +349,6 @@ export default function PlayPage({
     }
   }, [tableScores, phase, currentRound?.type_id])
 
-  // ─── Broadcast 事件處理（維持相容性）──────────────────────────
-
-  // 回合狀態變更（broadcast 來源）
-  const handleStatusChange = useCallback((payload: Record<string, unknown>) => {
-    try {
-      const data = payload as { status?: RoundStatus; round?: Round }
-      if (data.status === 'open' && data.round) {
-        setCurrentRound(data.round)
-        setPhase('voting')
-      } else if (data.status === 'closed' || data.status === 'revealed') {
-        setPhase('result')
-      }
-    } catch {
-      // payload 解析錯誤不 crash
-    }
-  }, [])
-
-  // 主持人指令（broadcast 來源）
-  const handleCommand = useCallback((payload: Record<string, unknown>) => {
-    try {
-      const data = payload as { action?: string; round?: Round }
-      if (data.action === 'show_round_intro' && data.round) {
-        setCurrentRound(data.round)
-        setPhase('waiting')
-      }
-    } catch {
-      // payload 解析錯誤不 crash
-    }
-  }, [])
-
-  // 訂閱 broadcast channel（相容舊版）
-  useRealtimeMulti(CHANNELS.roundStatus(code), {
-    status_change: handleStatusChange,
-    command: handleCommand,
-  })
-
-  // ─── DB 層直接訂閱：rounds 表狀態變更 ───────────────────────────
-  useRealtimeDB<{ id: string; status: RoundStatus; event_id: string }>(
-    'rounds',
-    eventInfo?.id ? `event_id=eq.${eventInfo.id}` : undefined,
-    undefined,
-    useCallback((payload: RealtimeDBPayload<{ id: string; status: RoundStatus; event_id: string }>) => {
-      const newStatus = payload.new?.status
-      if (!newStatus) return
-
-      if (newStatus === 'open') {
-        if (eventInfo?.id) {
-          fetch(`/api/results?event_code=${code}`)
-            .then((r) => r.json())
-            .then((data) => {
-              if (data.current_round) {
-                setCurrentRound(data.current_round)
-                setPhase('voting')
-              }
-            })
-            .catch(() => { /* 靜默忽略 */ })
-        }
-      } else if (newStatus === 'closed' || newStatus === 'revealed') {
-        setPhase('result')
-      }
-    }, [code, eventInfo?.id])
-  )
-
   // ─── #11: 找到自己桌的排行榜位置 ────────────────────────────────
   const myRank = leaderboard.findIndex(e => participant && e.entity_id === participant.table_id)
   const myRankEntry = myRank >= 0 ? leaderboard[myRank] : undefined
@@ -546,7 +463,7 @@ export default function PlayPage({
           {/* 備案：手動重整按鈕 */}
           <button
             onClick={() => {
-              pollRoundStatus()
+              syncNow()
               showToast('已手動同步')
             }}
             className="mt-4 px-6 py-2.5 rounded-xl text-sm font-medium
@@ -671,7 +588,7 @@ export default function PlayPage({
             👀 結果揭曉時請看大螢幕
           </p>
           <button
-            onClick={() => { pollRoundStatus(); showToast('已手動同步') }}
+            onClick={() => { syncNow(); showToast('已手動同步') }}
             className="mt-3 px-5 py-2 rounded-xl text-xs text-white/30 bg-white/5 border border-white/10 active:bg-white/10"
           >
             🔄 畫面沒動？點這裡同步
@@ -687,7 +604,7 @@ export default function PlayPage({
             <h2 className="text-2xl font-bold text-gold-200 mb-1">結果揭曉！</h2>
             <p className="text-white/40 text-sm">📱 下一輪開始時畫面會自動切換
               <button
-                onClick={() => { pollRoundStatus(); fetchLeaderboard(); showToast('已手動同步') }}
+                onClick={() => { syncNow(); fetchLeaderboard(); showToast('已手動同步') }}
                 className="block mx-auto mt-3 px-5 py-2 rounded-xl text-xs text-white/30 bg-white/5 border border-white/10 active:bg-white/10"
               >
                 🔄 畫面沒動？點這裡同步

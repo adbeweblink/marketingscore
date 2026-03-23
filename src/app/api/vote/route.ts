@@ -111,11 +111,17 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // #10 fix: Server 端不直接 broadcast
-    // 前端透過 Supabase Realtime postgres_changes 監聽 results_cache 變更
-    // 或前端每 3 秒 polling results API 作為 fallback
+    // 計算目前投票數，供前端直接更新進度條（不需要額外 polling）
+    const { count: currentVoteCount } = await supabase
+      .from('votes')
+      .select('id', { count: 'exact', head: true })
+      .eq('round_id', round_id)
+      .eq('is_valid', true)
 
-    return NextResponse.json({ success: true })
+    return NextResponse.json({
+      success: true,
+      vote_count: currentVoteCount ?? 0,
+    })
   } catch (err) {
     console.error('[Vote] Unexpected error:', err)
     return NextResponse.json({ error: '伺服器錯誤' }, { status: 500 })

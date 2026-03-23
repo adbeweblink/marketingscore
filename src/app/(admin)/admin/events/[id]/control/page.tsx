@@ -11,6 +11,7 @@ import {
 } from 'lucide-react'
 import { QRCodeSVG } from 'qrcode.react'
 import { cn } from '@/lib/utils'
+import { useLiveSync } from '@/hooks/useLiveSync'
 import type { Round, RoundStatus, Table } from '@/types/database'
 
 // 回合狀態顯示設定
@@ -66,7 +67,7 @@ function HostControlInner({
   const stopPressRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const stopPressStartRef = useRef<number>(0)
 
-  // Polling interval ref（每 3 秒查詢一次投票進度）
+  // Polling interval ref（已由 useLiveSync 統一管理，保留供手動刷新用）
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   const currentRound = rounds.find((r) => r.id === activeRound)
@@ -111,30 +112,6 @@ function HostControlInner({
     }
   }, [id, adminKey]) // 移除 activeRound（改用 functional setState 避免循環依賴）
 
-  // ─── 查詢投票進度 ────────────────────────────────────────────────
-  const pollVoteProgress = useCallback(async () => {
-    if (!activeRound) return
-    try {
-      const res = await fetch(`/api/results?round_id=${activeRound}`)
-      if (!res.ok) return
-      const data = await res.json()
-      // 同時更新參與人數（防止有人中途加入）
-      if (data.participant_count !== undefined) {
-        setVoteProgress((prev) => ({ ...prev, total: data.participant_count }))
-      }
-      // results API 回傳 vote_count 總數
-      if (data.results) {
-        const voted = data.results.reduce(
-          (sum: number, r: { vote_count?: number }) => sum + (r.vote_count ?? 0),
-          0
-        )
-        setVoteProgress((prev) => ({ ...prev, voted }))
-      }
-    } catch {
-      // 查詢失敗靜默忽略，不干擾主流程
-    }
-  }, [activeRound])
-
   // 頁面載入時取得資料
   useEffect(() => {
     if (adminKey) {
@@ -145,24 +122,23 @@ function HostControlInner({
     }
   }, [adminKey, loadEventData])
 
-  // 當 activeRound 為 open 狀態時，啟動 polling
-  useEffect(() => {
-    if (pollRef.current) {
-      clearInterval(pollRef.current)
-      pollRef.current = null
+  // ─── useLiveSync：1 秒 polling 投票進度（有 eventCode 才啟動）──
+  useLiveSync(
+    eventCode,
+    // 回合狀態變更時，重新載入完整活動資料（確保 rounds 清單同步）
+    useCallback(() => {
+      if (adminKey) loadEventData()
+    }, [adminKey, loadEventData]),
+    // 投票進度：直接更新
+    useCallback((voted: number, total: number) => {
+      setVoteProgress({ voted, total })
+    }, []),
+    {
+      // 有 eventCode 且目前回合是 open 狀態才需要高頻同步
+      enabled: !!eventCode && !!activeRound && currentRound?.status === 'open',
+      intervalMs: 1000,
     }
-
-    if (activeRound && currentRound?.status === 'open') {
-      pollRef.current = setInterval(pollVoteProgress, 3000)
-    }
-
-    return () => {
-      if (pollRef.current) {
-        clearInterval(pollRef.current)
-        pollRef.current = null
-      }
-    }
-  }, [activeRound, currentRound?.status, pollVoteProgress])
+  )
 
   // ─── 呼叫 Admin Round API ────────────────────────────────────────
   async function callRoundAPI(

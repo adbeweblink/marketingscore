@@ -5,15 +5,13 @@ import { use } from 'react'
 import { ParticleBackground } from '@/components/display/ParticleBackground'
 import { Leaderboard } from '@/components/display/Leaderboard'
 import { ScoreCounter } from '@/components/display/ScoreCounter'
-import { useRealtimeMulti, useEventRealtimeDB, type RealtimeDBPayload } from '@/hooks/useRealtime'
+import { useLiveSync, type LiveState } from '@/hooks/useLiveSync'
 import { useLeaderboardStore } from '@/hooks/useLeaderboard'
 import { useRoundStore } from '@/hooks/useRound'
-import { CHANNELS } from '@/lib/channels'
 import { QRCodeSVG } from 'qrcode.react'
-import type { ScoreBoard, Round, RoundStatus } from '@/types/database'
+import type { ScoreBoard, Round } from '@/types/database'
 
 type DisplayMode = 'idle' | 'round-intro' | 'voting' | 'counting' | 'reveal' | 'final'
-type ConnectionStatus = 'connected' | 'disconnected'
 
 export default function DisplayPage({
   params,
@@ -23,18 +21,15 @@ export default function DisplayPage({
   const { code } = use(params)
   const [mode, setMode] = useState<DisplayMode>('idle')
   const [eventName, setEventName] = useState('MarketingScore')
-  const [eventId, setEventId] = useState<string | undefined>(undefined)
   const [voteProgress, setVoteProgress] = useState({ voted: 0, total: 0 })
   const [particleIntensity, setParticleIntensity] = useState<'low' | 'normal' | 'high' | 'celebration'>('low')
 
-  // #4 連線狀態
-  const [connStatus, setConnStatus] = useState<ConnectionStatus>('connected')
-  const fallbackPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
-  const lastRealtimeRef = useRef<number>(Date.now())
-  // #6 debounce：記錄上次 fetch 時間，防止 handleResultsDBChange / handleRoundStatusChange 同時觸發
-  const lastFetchRef = useRef<number>(0)
+  // 記錄上一次的 round status，用於偵測狀態轉換
+  const lastRoundStatusRef = useRef<string | null>(null)
+  // 排行榜 3 秒 polling ref
+  const leaderboardPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
-  const { entries, setEntries, updateScore } = useLeaderboardStore()
+  const { entries, setEntries } = useLeaderboardStore()
   const { currentRound, setCurrentRound, countdown, setCountdown, tick } = useRoundStore()
 
   // 倒數計時
@@ -44,222 +39,105 @@ export default function DisplayPage({
     return () => clearInterval(timer)
   }, [countdown, tick])
 
-  // ─── 初始化：透過活動代碼取得 event_id（供 DB 訂閱過濾） ──────
+  // ─── 初始化：取得活動名稱與初始排行榜 ─────────────────────────
   useEffect(() => {
-    async function fetchEventId() {
+    async function fetchInitial() {
       try {
         const res = await fetch(`/api/results?event_code=${code}`)
         if (res.ok) {
           const data = await res.json()
-          if (data.event_id) {
-            setEventId(data.event_id)
-          }
-          if (data.event_name) {
-            setEventName(data.event_name)
-          }
-          // 若有初始排行榜資料
-          if (data.rankings) {
-            setEntries(data.rankings)
-          }
+          if (data.event_name) setEventName(data.event_name)
+          if (data.rankings) setEntries(data.rankings as ScoreBoard[])
         }
       } catch {
-        // 初始化失敗不影響後續 realtime 訂閱
+        // 靜默忽略，useLiveSync 會持續 polling
       }
     }
-    fetchEventId()
+    fetchInitial()
   }, [code, setEntries])
 
-  // ─── #4 Fallback Polling：每 5 秒查 /api/results ─────────────
-  // 同時監控 realtime 活躍狀態，若超過 10 秒沒收到訊號則標記斷線
+  // ─── 排行榜 3 秒 polling（voting / reveal 時才跑）─────────────
   const fetchLatestResults = useCallback(async () => {
     try {
       const res = await fetch(`/api/results?event_code=${code}`)
       if (!res.ok) return
       const data = await res.json()
-      if (data.rankings) setEntries(data.rankings)
-      if (data.voted !== undefined && data.total !== undefined) {
-        setVoteProgress({ voted: data.voted, total: data.total })
-      }
+      if (data.rankings) setEntries(data.rankings as ScoreBoard[])
     } catch {
       // 靜默忽略
     }
   }, [code, setEntries])
 
   useEffect(() => {
-    // 每 10 秒監控 realtime 活躍狀態（不主動 fetch，只更新連線指示）
-    const connCheckRef = setInterval(() => {
-      const elapsed = Date.now() - lastRealtimeRef.current
-      if (elapsed > 10000) {
-        setConnStatus('disconnected')
-      } else {
-        setConnStatus('connected')
-      }
-    }, 5000)
-
-    return () => clearInterval(connCheckRef)
-  }, [])
-
-  // #5 Fallback polling：只在斷線或 voting/reveal 模式才啟動
-  useEffect(() => {
-    if (fallbackPollRef.current) {
-      clearInterval(fallbackPollRef.current)
-      fallbackPollRef.current = null
+    if (leaderboardPollRef.current) {
+      clearInterval(leaderboardPollRef.current)
+      leaderboardPollRef.current = null
     }
 
-    const shouldPoll = connStatus === 'disconnected' || mode === 'voting' || mode === 'reveal'
+    // 只在需要顯示最新分數的模式才啟動排行榜 polling
+    const shouldPoll = mode === 'voting' || mode === 'reveal' || mode === 'counting'
     if (!shouldPoll) return
 
-    fallbackPollRef.current = setInterval(fetchLatestResults, 5000)
-
+    leaderboardPollRef.current = setInterval(fetchLatestResults, 3000)
     return () => {
-      if (fallbackPollRef.current) {
-        clearInterval(fallbackPollRef.current)
-        fallbackPollRef.current = null
+      if (leaderboardPollRef.current) {
+        clearInterval(leaderboardPollRef.current)
+        leaderboardPollRef.current = null
       }
     }
-  }, [connStatus, mode, fetchLatestResults])
+  }, [mode, fetchLatestResults])
 
-  // 重複 polling 已移除（#audit: displayRoundPoll 與 fallbackPoll 重疊）
-  // 大螢幕的排行榜更新完全由 fallbackPollRef 處理（斷線/voting/reveal 時才跑）
+  // ─── useLiveSync：1 秒 polling，偵測回合狀態切換 ──────────────
+  const handleRoundChange = useCallback((data: LiveState) => {
+    const newStatus = data.current_round_status
+    const prevStatus = lastRoundStatusRef.current
 
-  // ─── Broadcast 事件處理（維持相容性，同時接受 broadcast）──────
+    // 狀態真的改變時才更新畫面
+    if (newStatus !== prevStatus) {
+      lastRoundStatusRef.current = newStatus
 
-  // 分數更新（broadcast 來源）
-  const handleScoreUpdate = useCallback((payload: Record<string, unknown>) => {
-    lastRealtimeRef.current = Date.now()
-    setConnStatus('connected')
-    const data = payload as {
-      rankings?: ScoreBoard[]
-      entity_id?: string
-      round_id?: string
-      score?: number
-      voted?: number
-      total?: number
-    }
-    if (data.rankings) {
-      setEntries(data.rankings)
-    }
-    if (data.entity_id && data.round_id && data.score !== undefined) {
-      updateScore(data.entity_id, data.round_id, data.score)
-    }
-    if (data.voted !== undefined && data.total !== undefined) {
-      setVoteProgress({ voted: data.voted, total: data.total })
-    }
-  }, [setEntries, updateScore])
-
-  // 回合狀態變更（broadcast 來源）
-  const handleStatusChange = useCallback((payload: Record<string, unknown>) => {
-    lastRealtimeRef.current = Date.now()
-    setConnStatus('connected')
-    const data = payload as { status?: RoundStatus; round?: Record<string, unknown> }
-    if (data.status === 'open') {
-      setMode('voting')
-      setParticleIntensity('normal')
-    } else if (data.status === 'closed') {
-      setMode('counting')
-      setParticleIntensity('high')
-    } else if (data.status === 'revealed') {
-      setMode('reveal')
-      setParticleIntensity('celebration')
-    }
-  }, [])
-
-  // 主持人指令（broadcast 來源）
-  const handleCommand = useCallback((payload: Record<string, unknown>) => {
-    lastRealtimeRef.current = Date.now()
-    setConnStatus('connected')
-    try {
-      const data = payload as {
-        action?: string
-        round?: Round
-        countdown?: number
-        event_name?: string
-      }
-      switch (data.action) {
-        case 'show_idle':
+      if (newStatus === 'open') {
+        // 轉換為 Round 型別
+        if (data.current_round_id) {
+          setCurrentRound({
+            id: data.current_round_id,
+            seq: data.current_round_seq ?? 0,
+            title: data.current_round_title ?? '',
+            type_id: data.current_round_type ?? '',
+            status: 'open',
+            config: data.current_round_config ?? null,
+          } as unknown as Round)
+        }
+        setMode('voting')
+        setParticleIntensity('normal')
+        // 立即拉一次排行榜
+        fetchLatestResults()
+      } else if (newStatus === 'closed') {
+        setMode('counting')
+        setParticleIntensity('high')
+      } else if (newStatus === 'revealed') {
+        setMode('reveal')
+        setParticleIntensity('celebration')
+        // 揭曉時立即拉最新排行榜
+        fetchLatestResults()
+      } else if (newStatus === null) {
+        // 無進行中回合（活動剛開始或回合間空檔）
+        if (prevStatus !== null) {
           setMode('idle')
           setParticleIntensity('low')
-          break
-        case 'show_round_intro':
-          setMode('round-intro')
-          setParticleIntensity('normal')
-          if (data.round) setCurrentRound(data.round)
-          break
-        case 'start_countdown':
-          if (data.countdown) setCountdown(data.countdown)
-          break
-        case 'show_final':
-          setMode('final')
-          setParticleIntensity('celebration')
-          break
-        case 'init':
-          if (data.event_name) setEventName(data.event_name)
-          break
-      }
-    } catch { /* payload 解析錯誤不 crash */ }
-  }, [setCurrentRound, setCountdown])
-
-  // 訂閱 broadcast channel（相容舊版廣播）
-  useRealtimeMulti(CHANNELS.scores(code), {
-    score_update: handleScoreUpdate,
-    status_change: handleStatusChange,
-    command: handleCommand,
-  })
-
-  // ─── DB 層直接訂閱（postgres_changes）──────────────────────────
-
-  // results_cache 更新 → 大螢幕即時分數
-  const handleResultsDBChange = useCallback((_payload: RealtimeDBPayload) => {
-    lastRealtimeRef.current = Date.now()
-    setConnStatus('connected')
-    // #6 debounce：300ms 內不重複 fetch
-    const now = Date.now()
-    if (now - lastFetchRef.current < 300) return
-    lastFetchRef.current = now
-    // DB 有變化時，重新拉取最新排行榜（直接查 API 最簡單，避免前端組裝邏輯）
-    fetch(`/api/results?event_code=${code}`)
-      .then((r) => r.json())
-      .then((data) => {
-        if (data.rankings) setEntries(data.rankings)
-        if (data.voted !== undefined && data.total !== undefined) {
-          setVoteProgress({ voted: data.voted, total: data.total })
         }
-      })
-      .catch(() => { /* 靜默忽略 */ })
-  }, [code, setEntries])
-
-  // rounds 狀態變更 → 大螢幕自動切換畫面
-  const handleRoundStatusChange = useCallback((newStatus: RoundStatus, roundId: string) => {
-    lastRealtimeRef.current = Date.now()
-    setConnStatus('connected')
-    console.log(`[Display] DB 回合狀態變更: ${roundId} → ${newStatus}`)
-    if (newStatus === 'open') {
-      // #6 debounce：300ms 內不重複 fetch
-      const now = Date.now()
-      if (now - lastFetchRef.current < 300) return
-      lastFetchRef.current = now
-      // 拉取最新回合資訊
-      fetch(`/api/results?event_code=${code}`)
-        .then((r) => r.json())
-        .then((data) => {
-          if (data.current_round) {
-            setCurrentRound(data.current_round)
-          }
-        })
-        .catch(() => { /* 靜默忽略 */ })
-      setMode('voting')
-      setParticleIntensity('normal')
-    } else if (newStatus === 'closed') {
-      setMode('counting')
-      setParticleIntensity('high')
-    } else if (newStatus === 'revealed') {
-      setMode('reveal')
-      setParticleIntensity('celebration')
+      }
     }
-  }, [code, setCurrentRound])
+  }, [setCurrentRound, fetchLatestResults])
 
-  // 啟用 DB 直接訂閱
-  useEventRealtimeDB(eventId, handleResultsDBChange, handleRoundStatusChange)
+  const handleVoteProgress = useCallback((voted: number, total: number) => {
+    setVoteProgress({ voted, total })
+  }, [])
+
+  useLiveSync(code, handleRoundChange, handleVoteProgress, {
+    enabled: true,
+    intervalMs: 1000,
+  })
 
   return (
     <div className="min-h-screen w-screen theme-golden overflow-hidden relative">
@@ -369,22 +247,7 @@ export default function DisplayPage({
         )}
       </div>
 
-      {/* #4 連線狀態指示器（右下角） */}
-      <div className="fixed bottom-4 right-4 z-50 flex items-center gap-2">
-        {connStatus === 'disconnected' && (
-          <span className="text-xs text-red-400/70 bg-black/40 px-2 py-1 rounded-lg">
-            重連中...
-          </span>
-        )}
-        <div
-          className={`w-3 h-3 rounded-full ${
-            connStatus === 'connected'
-              ? 'bg-green-400 shadow-[0_0_6px_rgba(74,222,128,0.8)]'
-              : 'bg-red-400 animate-pulse shadow-[0_0_6px_rgba(248,113,113,0.8)]'
-          }`}
-          title={connStatus === 'connected' ? '已連線' : '斷線中'}
-        />
-      </div>
+      {/* polling 模式不需要連線狀態指示器 */}
     </div>
   )
 }
