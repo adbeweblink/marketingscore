@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { use } from 'react'
 import { ParticleBackground } from '@/components/display/ParticleBackground'
 import { Leaderboard } from '@/components/display/Leaderboard'
@@ -9,9 +9,11 @@ import { useRealtimeMulti, useEventRealtimeDB, type RealtimeDBPayload } from '@/
 import { useLeaderboardStore } from '@/hooks/useLeaderboard'
 import { useRoundStore } from '@/hooks/useRound'
 import { CHANNELS } from '@/lib/channels'
+import { QRCodeSVG } from 'qrcode.react'
 import type { ScoreBoard, Round, RoundStatus } from '@/types/database'
 
 type DisplayMode = 'idle' | 'round-intro' | 'voting' | 'counting' | 'reveal' | 'final'
+type ConnectionStatus = 'connected' | 'disconnected'
 
 export default function DisplayPage({
   params,
@@ -24,6 +26,11 @@ export default function DisplayPage({
   const [eventId, setEventId] = useState<string | undefined>(undefined)
   const [voteProgress, setVoteProgress] = useState({ voted: 0, total: 0 })
   const [particleIntensity, setParticleIntensity] = useState<'low' | 'normal' | 'high' | 'celebration'>('low')
+
+  // #4 連線狀態
+  const [connStatus, setConnStatus] = useState<ConnectionStatus>('connected')
+  const fallbackPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const lastRealtimeRef = useRef<number>(Date.now())
 
   const { entries, setEntries, updateScore } = useLeaderboardStore()
   const { currentRound, setCurrentRound, countdown, setCountdown, tick } = useRoundStore()
@@ -60,10 +67,49 @@ export default function DisplayPage({
     fetchEventId()
   }, [code, setEntries])
 
+  // ─── #4 Fallback Polling：每 5 秒查 /api/results ─────────────
+  // 同時監控 realtime 活躍狀態，若超過 10 秒沒收到訊號則標記斷線
+  const fetchLatestResults = useCallback(async () => {
+    try {
+      const res = await fetch(`/api/results?event_code=${code}`)
+      if (!res.ok) return
+      const data = await res.json()
+      if (data.rankings) setEntries(data.rankings)
+      if (data.voted !== undefined && data.total !== undefined) {
+        setVoteProgress({ voted: data.voted, total: data.total })
+      }
+    } catch {
+      // 靜默忽略
+    }
+  }, [code, setEntries])
+
+  useEffect(() => {
+    // 啟動 fallback polling（每 5 秒）
+    fallbackPollRef.current = setInterval(async () => {
+      await fetchLatestResults()
+      // 若超過 10 秒沒收到 realtime 訊號，視為斷線
+      const elapsed = Date.now() - lastRealtimeRef.current
+      if (elapsed > 10000) {
+        setConnStatus('disconnected')
+      } else {
+        setConnStatus('connected')
+      }
+    }, 5000)
+
+    return () => {
+      if (fallbackPollRef.current) {
+        clearInterval(fallbackPollRef.current)
+        fallbackPollRef.current = null
+      }
+    }
+  }, [fetchLatestResults])
+
   // ─── Broadcast 事件處理（維持相容性，同時接受 broadcast）──────
 
   // 分數更新（broadcast 來源）
   const handleScoreUpdate = useCallback((payload: Record<string, unknown>) => {
+    lastRealtimeRef.current = Date.now()
+    setConnStatus('connected')
     const data = payload as {
       rankings?: ScoreBoard[]
       entity_id?: string
@@ -85,6 +131,8 @@ export default function DisplayPage({
 
   // 回合狀態變更（broadcast 來源）
   const handleStatusChange = useCallback((payload: Record<string, unknown>) => {
+    lastRealtimeRef.current = Date.now()
+    setConnStatus('connected')
     const data = payload as { status?: RoundStatus; round?: Record<string, unknown> }
     if (data.status === 'open') {
       setMode('voting')
@@ -100,6 +148,8 @@ export default function DisplayPage({
 
   // 主持人指令（broadcast 來源）
   const handleCommand = useCallback((payload: Record<string, unknown>) => {
+    lastRealtimeRef.current = Date.now()
+    setConnStatus('connected')
     try {
       const data = payload as {
         action?: string
@@ -142,6 +192,8 @@ export default function DisplayPage({
 
   // results_cache 更新 → 大螢幕即時分數
   const handleResultsDBChange = useCallback((_payload: RealtimeDBPayload) => {
+    lastRealtimeRef.current = Date.now()
+    setConnStatus('connected')
     // DB 有變化時，重新拉取最新排行榜（直接查 API 最簡單，避免前端組裝邏輯）
     fetch(`/api/results?event_code=${code}`)
       .then((r) => r.json())
@@ -156,6 +208,8 @@ export default function DisplayPage({
 
   // rounds 狀態變更 → 大螢幕自動切換畫面
   const handleRoundStatusChange = useCallback((newStatus: RoundStatus, roundId: string) => {
+    lastRealtimeRef.current = Date.now()
+    setConnStatus('connected')
     console.log(`[Display] DB 回合狀態變更: ${roundId} → ${newStatus}`)
     if (newStatus === 'open') {
       // 拉取最新回合資訊
@@ -195,11 +249,16 @@ export default function DisplayPage({
             <p className="text-2xl text-gold-200/50 mb-8">
               掃描 QR Code 加入活動
             </p>
-            <div className="w-64 h-64 bg-white rounded-2xl mx-auto flex items-center justify-center">
-              <span className="text-surface-dark text-lg">
-                QR Code: /play/{code}
-              </span>
+            <div className="w-72 h-72 bg-white rounded-2xl mx-auto flex items-center justify-center p-4">
+              <QRCodeSVG
+                value={`${typeof window !== 'undefined' ? window.location.origin : 'https://marketingscore.netlify.app'}/play/${code}`}
+                size={256}
+                level="M"
+                bgColor="#FFFFFF"
+                fgColor="#1A0A00"
+              />
             </div>
+            <p className="text-lg text-gold-200/30 mt-4 font-mono tracking-widest">{code}</p>
           </div>
         )}
 
@@ -282,6 +341,23 @@ export default function DisplayPage({
             <Leaderboard entries={entries} showScores />
           </div>
         )}
+      </div>
+
+      {/* #4 連線狀態指示器（右下角） */}
+      <div className="fixed bottom-4 right-4 z-50 flex items-center gap-2">
+        {connStatus === 'disconnected' && (
+          <span className="text-xs text-red-400/70 bg-black/40 px-2 py-1 rounded-lg">
+            重連中...
+          </span>
+        )}
+        <div
+          className={`w-3 h-3 rounded-full ${
+            connStatus === 'connected'
+              ? 'bg-green-400 shadow-[0_0_6px_rgba(74,222,128,0.8)]'
+              : 'bg-red-400 animate-pulse shadow-[0_0_6px_rgba(248,113,113,0.8)]'
+          }`}
+          title={connStatus === 'connected' ? '已連線' : '斷線中'}
+        />
       </div>
     </div>
   )

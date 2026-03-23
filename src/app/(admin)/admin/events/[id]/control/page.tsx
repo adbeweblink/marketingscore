@@ -6,8 +6,10 @@ import { useSearchParams } from 'next/navigation'
 import { motion } from 'framer-motion'
 import {
   Play, Square, SkipForward, Eye, Trophy,
-  Plus, Minus, Timer, Users, Monitor, Loader2, AlertCircle
+  Plus, Minus, Timer, Users, Monitor, Loader2, AlertCircle,
+  Share2, Copy, X, Check
 } from 'lucide-react'
+import { QRCodeSVG } from 'qrcode.react'
 import { cn } from '@/lib/utils'
 import type { Round, RoundStatus, Table } from '@/types/database'
 
@@ -45,6 +47,7 @@ function HostControlInner({
   const [tables, setTables] = useState<Table[]>([])
   const [activeRound, setActiveRound] = useState<string | null>(null)
   const [voteProgress, setVoteProgress] = useState({ voted: 0, total: 0 })
+  const [participantCount, setParticipantCount] = useState<number>(0)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [actionLoading, setActionLoading] = useState(false)
@@ -52,10 +55,30 @@ function HostControlInner({
   // 手動加減分狀態：桌次 ID → 目前分數
   const [manualScores, setManualScores] = useState<Record<string, number>>({})
 
+  // #2 分享連結 modal
+  const [showShareModal, setShowShareModal] = useState(false)
+  const [copiedJoin, setCopiedJoin] = useState(false)
+
+  // #5 複製控制台連結
+  const [copiedControl, setCopiedControl] = useState(false)
+
+  // #6 長按結束投票狀態
+  const [stopPressProgress, setStopPressProgress] = useState(0) // 0~100
+  const stopPressRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const stopPressStartRef = useRef<number>(0)
+
   // Polling interval ref（每 3 秒查詢一次投票進度）
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   const currentRound = rounds.find((r) => r.id === activeRound)
+
+  // 加入連結（for QR Code）
+  const joinUrl = typeof window !== 'undefined'
+    ? `${window.location.origin}/play/${id}`
+    : `/play/${id}`
+
+  // 全員投完判斷
+  const allVoted = voteProgress.total > 0 && voteProgress.voted >= voteProgress.total
 
   // ─── 載入活動資料 ───────────────────────────────────────────────
   const loadEventData = useCallback(async () => {
@@ -69,7 +92,9 @@ function HostControlInner({
       const data = await res.json()
       setRounds(data.rounds ?? [])
       setTables(data.tables ?? [])
-      setVoteProgress((prev) => ({ ...prev, total: data.participant_count ?? 0 }))
+      const count = data.participant_count ?? 0
+      setParticipantCount(count)
+      setVoteProgress((prev) => ({ ...prev, total: count }))
 
       // 找出目前正在進行的回合
       const openRound = data.rounds?.find((r: Round) => r.status === 'open')
@@ -90,6 +115,11 @@ function HostControlInner({
       const res = await fetch(`/api/results?round_id=${activeRound}`)
       if (!res.ok) return
       const data = await res.json()
+      // 同時更新參與人數（防止有人中途加入）
+      if (data.participant_count !== undefined) {
+        setParticipantCount(data.participant_count)
+        setVoteProgress((prev) => ({ ...prev, total: data.participant_count }))
+      }
       // results API 回傳 vote_count 總數
       if (data.results) {
         const voted = data.results.reduce(
@@ -266,6 +296,54 @@ function HostControlInner({
     })
   }
 
+  // ─── #2 複製加入連結 ─────────────────────────────────────────────
+  async function handleCopyJoinLink() {
+    try {
+      await navigator.clipboard.writeText(joinUrl)
+      setCopiedJoin(true)
+      setTimeout(() => setCopiedJoin(false), 2000)
+    } catch {
+      // 複製失敗靜默忽略
+    }
+  }
+
+  // ─── #5 複製控制台連結 ───────────────────────────────────────────
+  async function handleCopyControlLink() {
+    try {
+      await navigator.clipboard.writeText(typeof window !== 'undefined' ? window.location.href : '')
+      setCopiedControl(true)
+      setTimeout(() => setCopiedControl(false), 2000)
+    } catch {
+      // 複製失敗靜默忽略
+    }
+  }
+
+  // ─── #6 長按結束投票 ─────────────────────────────────────────────
+  function handleStopPressStart() {
+    if (actionLoading) return
+    stopPressStartRef.current = Date.now()
+    setStopPressProgress(0)
+    stopPressRef.current = setInterval(() => {
+      const elapsed = Date.now() - stopPressStartRef.current
+      const progress = Math.min((elapsed / 2000) * 100, 100)
+      setStopPressProgress(progress)
+      if (progress >= 100) {
+        clearInterval(stopPressRef.current!)
+        stopPressRef.current = null
+        setStopPressProgress(0)
+        handleAction('stop')
+      }
+    }, 30)
+  }
+
+  function handleStopPressEnd() {
+    if (stopPressRef.current) {
+      clearInterval(stopPressRef.current)
+      stopPressRef.current = null
+    }
+    setStopPressProgress(0)
+  }
+
   // ─── 載入中 / 錯誤畫面 ──────────────────────────────────────────
   if (loading) {
     return (
@@ -301,12 +379,28 @@ function HostControlInner({
     <div className="min-h-screen bg-surface-dark p-4 pb-32">
       <div className="max-w-lg mx-auto">
         {/* Header */}
-        <div className="text-center mb-6">
+        <div className="text-center mb-4">
           <h1 className="text-xl font-bold text-gold-200">主持人控制台</h1>
           <p className="text-xs text-white/30">活動 ID: {id}</p>
           {adminKey && (
             <p className="text-xs text-green-400/60 mt-0.5">已驗證管理員</p>
           )}
+        </div>
+
+        {/* #1 已加入人數 + #2 分享連結按鈕 */}
+        <div className="flex items-center justify-between mb-5 px-4 py-3 rounded-xl bg-surface-card border border-white/5">
+          <div className="flex items-center gap-2">
+            <Users size={16} className="text-gold-400" />
+            <span className="text-white/60 text-sm">已加入</span>
+            <span className="text-gold-200 font-bold text-lg tabular-nums">{participantCount}</span>
+            <span className="text-white/30 text-sm">人</span>
+          </div>
+          <button
+            onClick={() => setShowShareModal(true)}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-gold-400/10 text-gold-200 text-sm font-medium active:bg-gold-400/20"
+          >
+            <Share2 size={14} /> 分享加入連結
+          </button>
         </div>
 
         {/* 操作中 loading 提示 */}
@@ -347,18 +441,31 @@ function HostControlInner({
               {currentRound.title}
             </h2>
 
-            {/* 投票進度 */}
+            {/* #3 投票進度 + 全員投完提示 */}
             {currentRound.status === 'open' && (
               <div className="mb-4">
                 <div className="flex justify-between text-xs text-white/40 mb-1">
                   <span className="flex items-center gap-1">
                     <Users size={12} /> 投票進度
                   </span>
-                  <span>{voteProgress.voted} / {voteProgress.total}</span>
+                  <span className="flex items-center gap-1.5">
+                    <span>{voteProgress.voted} / {voteProgress.total}</span>
+                    {allVoted && (
+                      <span className="text-green-400 font-bold animate-pulse">全員投完！</span>
+                    )}
+                    {!allVoted && voteProgress.total > 0 && voteProgress.voted > 0 && (
+                      <span className="text-yellow-400">
+                        還差 {voteProgress.total - voteProgress.voted} 人
+                      </span>
+                    )}
+                  </span>
                 </div>
                 <div className="w-full h-2 bg-surface-elevated rounded-full overflow-hidden">
                   <div
-                    className="h-full bg-gold-400 rounded-full transition-all duration-500"
+                    className={cn(
+                      'h-full rounded-full transition-all duration-500',
+                      allVoted ? 'bg-green-400' : 'bg-gold-400'
+                    )}
                     style={{
                       width: voteProgress.total > 0
                         ? `${(voteProgress.voted / voteProgress.total) * 100}%`
@@ -366,6 +473,11 @@ function HostControlInner({
                     }}
                   />
                 </div>
+                {allVoted && (
+                  <p className="text-center text-green-400 text-xs mt-1.5 font-bold animate-bounce">
+                    ✓ 所有人投票完畢，可以結束投票了！
+                  </p>
+                )}
               </div>
             )}
 
@@ -373,15 +485,28 @@ function HostControlInner({
             <div className="grid grid-cols-2 gap-2">
               {currentRound.status === 'open' && (
                 <>
-                  <button
-                    onClick={() => handleAction('stop')}
-                    disabled={actionLoading}
-                    className="flex items-center justify-center gap-2 py-3 rounded-xl font-bold
-                      bg-red-500/20 text-red-300 active:bg-red-500/30
-                      disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    <Square size={16} /> 結束投票
-                  </button>
+                  {/* #6 長按結束投票按鈕 */}
+                  <div className="relative overflow-hidden rounded-xl">
+                    <button
+                      onPointerDown={handleStopPressStart}
+                      onPointerUp={handleStopPressEnd}
+                      onPointerLeave={handleStopPressEnd}
+                      disabled={actionLoading}
+                      className="relative z-10 w-full flex items-center justify-center gap-2 py-3 rounded-xl font-bold
+                        bg-red-500/20 text-red-300 active:bg-red-500/30
+                        disabled:opacity-50 disabled:cursor-not-allowed select-none"
+                    >
+                      {/* 長按進度條背景 */}
+                      <span
+                        className="absolute inset-0 bg-red-500/40 rounded-xl transition-none"
+                        style={{ width: `${stopPressProgress}%` }}
+                      />
+                      <span className="relative flex items-center gap-2">
+                        <Square size={16} />
+                        {stopPressProgress > 0 ? `${Math.round(stopPressProgress)}%` : '長按結束投票'}
+                      </span>
+                    </button>
+                  </div>
                   <button
                     onClick={() => handleAction('countdown')}
                     disabled={actionLoading}
@@ -510,14 +635,14 @@ function HostControlInner({
 
         {/* 底部快捷工具列 */}
         <div className="fixed bottom-0 left-0 right-0 p-4 bg-surface-dark/90 backdrop-blur-lg border-t border-white/5">
-          <div className="max-w-lg mx-auto flex gap-3">
+          <div className="max-w-lg mx-auto flex gap-2">
             <a
               href={`/display/${id}`}
               target="_blank"
               className="flex-1 flex items-center justify-center gap-2 py-3 rounded-xl font-medium text-sm
                 bg-white/5 text-white/60 active:bg-white/10"
             >
-              <Monitor size={16} /> 開啟大螢幕
+              <Monitor size={16} /> 大螢幕
             </a>
             <button
               onClick={() => handleAction('show_final')}
@@ -528,9 +653,64 @@ function HostControlInner({
             >
               <Trophy size={16} /> 最終排名
             </button>
+            {/* #5 複製控制台連結 */}
+            <button
+              onClick={handleCopyControlLink}
+              className="flex items-center justify-center gap-1.5 px-3 py-3 rounded-xl font-medium text-sm
+                bg-white/5 text-white/50 active:bg-white/10"
+              title="複製控制台連結"
+            >
+              {copiedControl ? <Check size={16} className="text-green-400" /> : <Copy size={16} />}
+            </button>
           </div>
         </div>
       </div>
+
+      {/* #2 分享加入連結 Modal */}
+      {showShareModal && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
+          onClick={() => setShowShareModal(false)}
+        >
+          <div
+            className="bg-surface-card rounded-2xl p-6 w-full max-w-sm border border-white/10"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-bold text-gold-200">分享加入連結</h3>
+              <button
+                onClick={() => setShowShareModal(false)}
+                className="w-8 h-8 flex items-center justify-center rounded-lg bg-white/5 text-white/40"
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            {/* QR Code */}
+            <div className="w-56 h-56 bg-white rounded-xl mx-auto flex items-center justify-center p-3 mb-4">
+              <QRCodeSVG
+                value={joinUrl}
+                size={208}
+                level="M"
+                bgColor="#FFFFFF"
+                fgColor="#1A0A00"
+              />
+            </div>
+
+            {/* 連結 + 複製 */}
+            <div className="flex items-center gap-2 bg-surface-elevated rounded-xl px-3 py-2.5 mb-2">
+              <span className="flex-1 text-xs text-white/40 truncate font-mono">{joinUrl}</span>
+              <button
+                onClick={handleCopyJoinLink}
+                className="shrink-0 flex items-center gap-1 px-2.5 py-1 rounded-lg bg-gold-400/20 text-gold-200 text-xs font-medium"
+              >
+                {copiedJoin ? <><Check size={12} /> 已複製</> : <><Copy size={12} /> 複製</>}
+              </button>
+            </div>
+            <p className="text-center text-xs text-white/20">掃描 QR Code 或直接開啟連結加入活動</p>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
