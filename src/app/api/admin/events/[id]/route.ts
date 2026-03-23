@@ -65,6 +65,7 @@ export async function GET(
 
   return NextResponse.json({
     event,
+    event_code: event.code,
     rounds: rounds ?? [],
     tables: tables ?? [],
     participant_count: participantCount ?? 0,

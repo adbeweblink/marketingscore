@@ -7,7 +7,7 @@ export const voteSchema = z.object({
   target_table_id: z.string().uuid().optional(),
   target_group_id: z.string().uuid().optional(),
   score: z.number().int().min(1).max(10).optional(),
-  answer: z.string().max(200).optional(),
+  answer: z.string().trim().min(1).max(200).optional(),
 }).refine(
   data => !!(data.target_table_id || data.target_group_id),
   { message: '必須指定投票目標' }

@@ -119,6 +119,9 @@ export default function DisplayPage({
     }
   }, [connStatus, mode, fetchLatestResults])
 
+  // 重複 polling 已移除（#audit: displayRoundPoll 與 fallbackPoll 重疊）
+  // 大螢幕的排行榜更新完全由 fallbackPollRef 處理（斷線/voting/reveal 時才跑）
+
   // ─── Broadcast 事件處理（維持相容性，同時接受 broadcast）──────
 
   // 分數更新（broadcast 來源）

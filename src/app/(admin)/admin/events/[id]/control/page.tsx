@@ -71,10 +71,13 @@ function HostControlInner({
 
   const currentRound = rounds.find((r) => r.id === activeRound)
 
-  // 加入連結（for QR Code）
+  // 活動代碼（從 API 載入後取得）
+  const [eventCode, setEventCode] = useState<string>('')
+
+  // 加入連結（用活動代碼而非 UUID）
   const joinUrl = typeof window !== 'undefined'
-    ? `${window.location.origin}/play/${id}`
-    : `/play/${id}`
+    ? `${window.location.origin}/play/${eventCode || id}`
+    : `/play/${eventCode || id}`
 
   // 全員投完判斷
   const allVoted = voteProgress.total > 0 && voteProgress.voted >= voteProgress.total
@@ -91,20 +94,22 @@ function HostControlInner({
       const data = await res.json()
       setRounds(data.rounds ?? [])
       setTables(data.tables ?? [])
+      if (data.event_code) setEventCode(data.event_code)
       const count = data.participant_count ?? 0
       setVoteProgress((prev) => ({ ...prev, total: count }))
 
-      // 找出目前正在進行的回合
+      // 找出目前正在進行的回合（用 functional check 避免依賴 activeRound）
       const openRound = data.rounds?.find((r: Round) => r.status === 'open')
-      if (openRound && !activeRound) {
-        setActiveRound(openRound.id)
-      }
+      setActiveRound((prev) => {
+        if (openRound && !prev) return openRound.id
+        return prev
+      })
     } catch {
       setError('網路錯誤，請重試')
     } finally {
       setLoading(false)
     }
-  }, [id, adminKey, activeRound])
+  }, [id, adminKey]) // 移除 activeRound（改用 functional setState 避免循環依賴）
 
   // ─── 查詢投票進度 ────────────────────────────────────────────────
   const pollVoteProgress = useCallback(async () => {

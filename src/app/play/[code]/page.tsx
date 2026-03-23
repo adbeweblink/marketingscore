@@ -51,6 +51,7 @@ export default function PlayPage({
   const { code } = use(params)
   const SESSION_KEY = `ms_participant_${code}`
   const [phase, setPhase] = useState<PlayPhase>('join')
+  const phaseRef = useRef<PlayPhase>('join') // stale closure 防護
   const [participant, setParticipant] = useState<ParticipantInfo | null>(null)
   const [eventInfo, setEventInfo] = useState<EventInfo | null>(null)
   const [tables, setTables] = useState<Table[]>([])
@@ -85,6 +86,55 @@ export default function PlayPage({
       // 靜默忽略
     }
   }, [code])
+
+  // 回合狀態 polling（Realtime 的 fallback，每 3 秒查一次）
+  const roundPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const lastKnownRoundStatus = useRef<string | null>(null)
+
+  // 同步 phaseRef
+  useEffect(() => { phaseRef.current = phase }, [phase])
+
+  const pollRoundStatus = useCallback(async () => {
+    if (!eventInfo?.id) return
+    try {
+      const res = await fetch(`/api/events/${code}/status`)
+      if (!res.ok) return
+      const data = await res.json()
+      const rounds: Round[] = data.rounds ?? []
+
+      const openRound = rounds.find((r: Round) => r.status === 'open')
+      const currentStatus = openRound ? 'open' : rounds.find((r: Round) => r.status === 'revealed') ? 'revealed' : 'idle'
+
+      // 只在狀態真的改變時才更新（用 ref 避免 stale closure）
+      if (currentStatus !== lastKnownRoundStatus.current) {
+        lastKnownRoundStatus.current = currentStatus
+        const currentPhase = phaseRef.current
+
+        if (openRound && currentPhase !== 'voting') {
+          setCurrentRound(openRound)
+          setPhase('voting')
+        } else if (currentStatus === 'revealed' && (currentPhase === 'voting' || currentPhase === 'submitted')) {
+          setPhase('result')
+        }
+      }
+    } catch {
+      // 靜默忽略
+    }
+  }, [eventInfo?.id, code]) // 移除 phase，用 phaseRef 代替
+
+  useEffect(() => {
+    const shouldPoll = phase === 'waiting' || phase === 'submitted' || phase === 'voting'
+    if (shouldPoll && eventInfo?.id) {
+      pollRoundStatus()
+      roundPollRef.current = setInterval(pollRoundStatus, 3000)
+    }
+    return () => {
+      if (roundPollRef.current) {
+        clearInterval(roundPollRef.current)
+        roundPollRef.current = null
+      }
+    }
+  }, [phase, eventInfo?.id, pollRoundStatus])
 
   // #11: 每 5 秒更新排行榜（waiting / submitted phase 才跑）
   useEffect(() => {
@@ -253,6 +303,7 @@ export default function PlayPage({
       })
 
       if (res.ok) {
+        showToast('✅ 投票成功！')
         setPhase('submitted')
       } else {
         const data = await res.json()
@@ -293,7 +344,9 @@ export default function PlayPage({
         }),
       })
 
-      if (!res.ok) {
+      if (res.ok) {
+        showToast(`✅ 第 ${tableScores.find(t=>t.tableId===tableId)?.tableNumber} 桌 ${score} 分已送出`)
+      } else {
         const data = await res.json()
         setError(data.error ?? '評分失敗')
         rollbackScore()
@@ -486,9 +539,22 @@ export default function PlayPage({
             </div>
           )}
 
-          <p className="text-white/20 text-xs mt-6">
-            📱 不用重新整理，畫面會自動更新
+          <p className="text-white/20 text-xs mt-4">
+            📱 畫面會自動更新
           </p>
+
+          {/* 備案：手動重整按鈕 */}
+          <button
+            onClick={() => {
+              pollRoundStatus()
+              showToast('已手動同步')
+            }}
+            className="mt-4 px-6 py-2.5 rounded-xl text-sm font-medium
+              bg-white/5 text-white/40 border border-white/10
+              active:bg-white/10 transition-colors"
+          >
+            🔄 畫面沒動？點這裡同步
+          </button>
         </div>
       )}
 
@@ -603,9 +669,13 @@ export default function PlayPage({
 
           <p className="text-white/20 text-xs">
             👀 結果揭曉時請看大螢幕
-            <br />
-            📱 下一輪開始時畫面會自動切換
           </p>
+          <button
+            onClick={() => { pollRoundStatus(); showToast('已手動同步') }}
+            className="mt-3 px-5 py-2 rounded-xl text-xs text-white/30 bg-white/5 border border-white/10 active:bg-white/10"
+          >
+            🔄 畫面沒動？點這裡同步
+          </button>
         </div>
       )}
 
@@ -615,7 +685,14 @@ export default function PlayPage({
           <div className="text-center mb-6">
             <div className="text-5xl mb-3">🏆</div>
             <h2 className="text-2xl font-bold text-gold-200 mb-1">結果揭曉！</h2>
-            <p className="text-white/40 text-sm">📱 下一輪開始時畫面會自動切換</p>
+            <p className="text-white/40 text-sm">📱 下一輪開始時畫面會自動切換
+              <button
+                onClick={() => { pollRoundStatus(); fetchLeaderboard(); showToast('已手動同步') }}
+                className="block mx-auto mt-3 px-5 py-2 rounded-xl text-xs text-white/30 bg-white/5 border border-white/10 active:bg-white/10"
+              >
+                🔄 畫面沒動？點這裡同步
+              </button>
+            </p>
           </div>
 
           {/* #10: 手機上顯示精簡排行榜 */}
@@ -671,7 +748,7 @@ export default function PlayPage({
 
       {/* ─── #7: 重新連線 toast ──────────────────────────────── */}
       {toast && (
-        <div className="fixed top-4 left-4 right-4 p-3 rounded-xl bg-green-600/30 border border-green-400/40 text-green-200 text-center text-sm z-50 pointer-events-none">
+        <div className="fixed bottom-20 left-1/2 -translate-x-1/2 px-4 py-2 rounded-full bg-black/70 text-white/90 text-xs z-50 pointer-events-none whitespace-nowrap">
           {toast}
         </div>
       )}

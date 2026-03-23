@@ -53,13 +53,15 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '參與者不屬於此活動' }, { status: 403 })
     }
 
-    // 6. 查詢投票者所屬的組別
-    const { data: voterGroups } = await supabase
-      .from('group_tables')
-      .select('group_id')
-      .eq('table_id', payload.table_id)
-
-    const voterGroupIds = (voterGroups ?? []).map((g: { group_id: string }) => g.group_id)
+    // 6. 查詢投票者所屬的組別（只在 group 投票時才查，省一次 DB roundtrip）
+    let voterGroupIds: string[] = []
+    if (target_group_id) {
+      const { data: voterGroups } = await supabase
+        .from('group_tables')
+        .select('group_id')
+        .eq('table_id', payload.table_id)
+      voterGroupIds = (voterGroups ?? []).map((g: { group_id: string }) => g.group_id)
+    }
 
     // 7. 防作弊：不能評自己桌/組
     const selfCheck = checkSelfVote(
@@ -92,15 +94,17 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '投票失敗' }, { status: 500 })
     }
 
-    // 9. 更新 results_cache（#96 fix: 檢查 RPC error）
+    // 9. 更新 results_cache
     const targetId = target_table_id ?? target_group_id
     const targetType = target_table_id ? 'table' : 'group'
-    if (targetId && score !== undefined) {
+    // 評分制用實際分數，猜謎制用 1 計票數
+    const cacheScore = score ?? (answer ? 1 : null)
+    if (targetId && cacheScore !== null) {
       const { error: cacheError } = await supabase.rpc('increment_result_cache', {
         p_round_id: round_id,
         p_target_type: targetType,
         p_target_id: targetId,
-        p_score: score,
+        p_score: cacheScore,
       })
       if (cacheError) {
         console.error('[Vote] Cache update failed:', cacheError)
