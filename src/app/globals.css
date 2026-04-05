@@ -1,7 +1,7 @@
 @import "tailwindcss";
 
 @theme {
-  /* 金碧輝煌色系 */
+  /* 柏青哥金屬色系 */
   --color-gold-50: #FFF9E6;
   --color-gold-100: #FFF0BF;
   --color-gold-200: #FFE480;
@@ -24,42 +24,195 @@
   --color-imperial-800: #DEB887;
   --color-imperial-900: #FAEBD7;
 
-  --color-surface-dark: #0D0D0D;
-  --color-surface-card: #1A1A1A;
-  --color-surface-elevated: #262626;
+  --color-surface-dark: #050508;
+  --color-surface-card: #12121a;
+  --color-surface-elevated: #1e1e2a;
 
   --font-display: 'Noto Sans TC', 'Microsoft JhengHei', sans-serif;
   --font-body: 'Noto Sans TC', 'Microsoft JhengHei', sans-serif;
 }
 
-/* 大螢幕金碧輝煌主題 */
+/* 柏青哥大螢幕主題 */
 .theme-golden {
-  background: radial-gradient(ellipse at center, #1A0A00 0%, #0D0D0D 70%);
+  background: radial-gradient(ellipse at center, #1A0800 0%, #050508 60%);
   color: #FFD740;
 }
 
-/* 分數跳動動畫 */
+/* ─── 貓咪大戰爭風格金屬字 ─── */
+.animate-shimmer {
+  background: linear-gradient(
+    90deg,
+    #B8860B 0%,
+    #FFD700 15%,
+    #FFFACD 30%,
+    #FFD700 45%,
+    #B8860B 55%,
+    #FFD700 70%,
+    #FFFACD 85%,
+    #B8860B 100%
+  );
+  background-size: 300% auto;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: shimmer 4s linear infinite;
+  filter: drop-shadow(0 3px 0 #4a2800) drop-shadow(0 5px 8px rgba(0, 0, 0, 0.6));
+}
+
+/* 貓咪大戰爭風格粗描邊標題 — 白字黑邊黃影 */
+.text-battle {
+  color: #FFFFFF;
+  -webkit-text-stroke: 4px #2a1500;
+  paint-order: stroke fill;
+  text-shadow:
+    0 0 4px rgba(255, 215, 0, 0.6),
+    0 5px 0 #8B4513,
+    0 7px 0 #6B3410,
+    0 9px 15px rgba(0, 0, 0, 0.7);
+  letter-spacing: 0.05em;
+}
+
+/* 較小字的描邊版本 */
+.text-battle-sm {
+  color: #FFFFFF;
+  -webkit-text-stroke: 2.5px #2a1500;
+  paint-order: stroke fill;
+  text-shadow:
+    0 0 3px rgba(255, 215, 0, 0.5),
+    0 3px 0 #8B4513,
+    0 5px 8px rgba(0, 0, 0, 0.5);
+}
+
+/* 金色描邊版 — 黃色漸層字 + 極粗深色描邊 + 強烈投影 */
+.text-battle-gold {
+  background: linear-gradient(180deg, #FFFACD 0%, #FFD700 40%, #DAA520 70%, #B8860B 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  -webkit-text-stroke: 4px #3a1800;
+  paint-order: stroke fill;
+  filter:
+    drop-shadow(0 5px 0 #2a1200)
+    drop-shadow(0 8px 15px rgba(0, 0, 0, 0.7))
+    drop-shadow(0 0 15px rgba(255, 215, 0, 0.4));
+}
+
+/* 紅色描邊版（用於倒數、警告） */
+.text-battle-red {
+  color: #FF2222;
+  -webkit-text-stroke: 4px #3a0000;
+  paint-order: stroke fill;
+  text-shadow:
+    0 0 8px rgba(255, 0, 0, 0.6),
+    0 5px 0 #5a0000,
+    0 7px 12px rgba(0, 0, 0, 0.6);
+}
+
+/* 分數數字 — 超大金色金屬 */
+.text-battle-score {
+  background: linear-gradient(180deg, #FFFFFF 0%, #FFD700 30%, #DAA520 60%, #B8860B 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  -webkit-text-stroke: 3px #3a1800;
+  paint-order: stroke fill;
+  filter:
+    drop-shadow(0 4px 0 #2a1200)
+    drop-shadow(0 0 10px rgba(255, 215, 0, 0.5));
+}
+
+/* 銀色金屬字（用於排名數字） */
+.text-chrome {
+  background: linear-gradient(
+    180deg,
+    #E8E8E8 0%,
+    #FFFFFF 25%,
+    #A0A0A0 50%,
+    #FFFFFF 75%,
+    #C0C0C0 100%
+  );
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  filter: drop-shadow(0 1px 2px rgba(255, 255, 255, 0.3));
+}
+
+/* 金色金屬字（用於分數） */
+.text-gold-metal {
+  background: linear-gradient(
+    180deg,
+    #FFD700 0%,
+    #FFFACD 20%,
+    #DAA520 40%,
+    #FFD700 60%,
+    #FFFACD 80%,
+    #B8860B 100%
+  );
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  filter: drop-shadow(0 2px 4px rgba(218, 165, 32, 0.5));
+}
+
+/* ─── 柏青哥光暈效果 ─── */
+.glow-gold {
+  text-shadow:
+    0 0 8px rgba(255, 215, 0, 0.6),
+    0 0 20px rgba(255, 179, 0, 0.4),
+    0 0 40px rgba(255, 165, 0, 0.2),
+    0 0 80px rgba(255, 140, 0, 0.1);
+}
+
+.glow-gold-strong {
+  text-shadow:
+    0 0 10px rgba(255, 215, 0, 0.9),
+    0 0 30px rgba(255, 179, 0, 0.7),
+    0 0 60px rgba(255, 165, 0, 0.5),
+    0 0 100px rgba(255, 140, 0, 0.3),
+    0 0 150px rgba(255, 100, 0, 0.15);
+}
+
+/* 霓虹邊框光暈 */
+.glow-border {
+  box-shadow:
+    0 0 5px rgba(255, 215, 0, 0.3),
+    0 0 15px rgba(255, 179, 0, 0.15),
+    inset 0 0 5px rgba(255, 215, 0, 0.1);
+}
+
+/* ─── 動畫 ─── */
+@keyframes shimmer {
+  0% { background-position: 300% center; }
+  100% { background-position: -300% center; }
+}
+
 @keyframes score-pulse {
   0%, 100% { transform: scale(1); }
-  50% { transform: scale(1.15); }
+  50% { transform: scale(1.15); filter: brightness(1.3); }
 }
 
 @keyframes score-float-up {
-  0% { opacity: 1; transform: translateY(0); }
-  100% { opacity: 0; transform: translateY(-60px); }
-}
-
-@keyframes shimmer {
-  0% { background-position: -200% center; }
-  100% { background-position: 200% center; }
+  0% { opacity: 1; transform: translateY(0) scale(1); }
+  50% { opacity: 0.8; transform: translateY(-30px) scale(1.2); }
+  100% { opacity: 0; transform: translateY(-60px) scale(0.8); }
 }
 
 @keyframes heartbeat {
   0%, 100% { transform: scale(1); }
-  14% { transform: scale(1.08); }
+  14% { transform: scale(1.12); filter: brightness(1.2); }
   28% { transform: scale(1); }
-  42% { transform: scale(1.08); }
+  42% { transform: scale(1.12); filter: brightness(1.2); }
   56% { transform: scale(1); }
+}
+
+/* 柏青哥旋轉閃光 */
+@keyframes pachinko-flash {
+  0%, 100% { opacity: 0.3; }
+  50% { opacity: 1; }
+}
+
+@keyframes neon-pulse {
+  0%, 100% {
+    box-shadow: 0 0 5px rgba(255, 215, 0, 0.4), 0 0 15px rgba(255, 179, 0, 0.2);
+  }
+  50% {
+    box-shadow: 0 0 10px rgba(255, 215, 0, 0.8), 0 0 30px rgba(255, 179, 0, 0.4), 0 0 50px rgba(255, 140, 0, 0.2);
+  }
 }
 
 .animate-score-pulse {
@@ -70,30 +223,59 @@
   animation: score-float-up 1.5s ease-out forwards;
 }
 
-.animate-shimmer {
-  background: linear-gradient(90deg, #FFB300, #FFD740, #FFF0BF, #FFD740, #FFB300);
-  background-size: 200% auto;
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  animation: shimmer 3s linear infinite;
-}
-
 .animate-heartbeat {
   animation: heartbeat 1.2s ease-in-out infinite;
 }
 
-/* 金色光暈 */
-.glow-gold {
-  text-shadow:
-    0 0 10px rgba(255, 202, 40, 0.5),
-    0 0 20px rgba(255, 179, 0, 0.3),
-    0 0 40px rgba(255, 179, 0, 0.15);
+.animate-neon-pulse {
+  animation: neon-pulse 2s ease-in-out infinite;
 }
 
-.glow-gold-strong {
-  text-shadow:
-    0 0 10px rgba(255, 202, 40, 0.8),
-    0 0 30px rgba(255, 179, 0, 0.6),
-    0 0 60px rgba(255, 179, 0, 0.4),
-    0 0 100px rgba(255, 179, 0, 0.2);
+.animate-pachinko-flash {
+  animation: pachinko-flash 0.8s ease-in-out infinite;
+}
+
+/* 金球浮動 */
+@keyframes ball-float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-10px); }
+}
+
+/* 金球靜態高光 */
+.ball-3d-sphere::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: radial-gradient(circle at 30% 25%, rgba(255,255,255,0.6) 0%, transparent 30%);
+  pointer-events: none;
+  z-index: 1;
+}
+
+/* ─── 金屬質感 Card ─── */
+.card-metal {
+  background: linear-gradient(145deg, #1a1a2e 0%, #16162a 50%, #1a1a2e 100%);
+  border: 1px solid rgba(255, 215, 0, 0.15);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.05),
+    0 4px 16px rgba(0, 0, 0, 0.4);
+}
+
+/* 金屬質感按鈕 */
+.btn-metal-gold {
+  background: linear-gradient(180deg, #FFD700 0%, #E6A200 50%, #CC8F00 100%);
+  color: #1a0a00;
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.3);
+  box-shadow:
+    0 2px 0 #996B00,
+    0 4px 8px rgba(0, 0, 0, 0.3),
+    inset 0 1px 0 rgba(255, 250, 205, 0.5);
+}
+
+.btn-metal-gold:active {
+  transform: translateY(1px);
+  box-shadow:
+    0 1px 0 #996B00,
+    0 2px 4px rgba(0, 0, 0, 0.3),
+    inset 0 1px 0 rgba(255, 250, 205, 0.3);
 }

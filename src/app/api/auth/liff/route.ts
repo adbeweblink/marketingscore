@@ -2,6 +2,32 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createAdminSupabase } from '@/lib/supabase/server'
 import { signParticipantToken } from '@/lib/auth'
 
+// 簡易 Rate Limiter：同 IP + event 每分鐘最多 5 次加入
+const joinAttempts = new Map<string, { count: number; resetAt: number }>()
+
+function checkRateLimit(ip: string, eventCode: string): boolean {
+  const key = `${ip}:${eventCode}`
+  const now = Date.now()
+  const entry = joinAttempts.get(key)
+
+  if (!entry || now > entry.resetAt) {
+    joinAttempts.set(key, { count: 1, resetAt: now + 60_000 })
+    return true
+  }
+
+  if (entry.count >= 5) return false
+  entry.count++
+  return true
+}
+
+// 每 5 分鐘清理過期記錄
+setInterval(() => {
+  const now = Date.now()
+  for (const [key, entry] of joinAttempts) {
+    if (now > entry.resetAt) joinAttempts.delete(key)
+  }
+}, 300_000)
+
 /** 參與者加入活動（暱稱登入 / LIFF 登入） */
 export async function POST(request: NextRequest) {
   try {
@@ -16,6 +42,12 @@ export async function POST(request: NextRequest) {
 
     if (!event_code || !table_number || !display_name || display_name.trim().length === 0) {
       return NextResponse.json({ error: '缺少必要欄位' }, { status: 400 })
+    }
+
+    // Rate limit：同 IP + event 每分鐘最多 5 次
+    const clientIp = request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? 'unknown'
+    if (!checkRateLimit(clientIp, event_code)) {
+      return NextResponse.json({ error: '操作太頻繁，請稍後再試' }, { status: 429 })
     }
 
     const supabase = createAdminSupabase()

@@ -29,19 +29,28 @@ export async function POST(request: NextRequest) {
       case 'start': {
         if (!round_id) return NextResponse.json({ error: '缺少 round_id' }, { status: 400 })
 
-        // #19 fix: 一次 JOIN 取回 events(code) + tables(id)
-        // Bug 13 fix: 加 .eq('status', 'pending') 確保只在 pending 時才有效
+        // 先確認是 pending 狀態
+        const { data: checkRound } = await supabase
+          .from('rounds')
+          .select('status')
+          .eq('id', round_id)
+          .single()
+
+        if (!checkRound || checkRound.status !== 'pending') {
+          return NextResponse.json({ error: '此回合不是待開始狀態' }, { status: 400 })
+        }
+
+        // 更新狀態並取回完整資料（含 events + tables）
         const { data: round, error } = await supabase
           .from('rounds')
           .update({ status: 'open', opened_at: new Date().toISOString() })
           .eq('id', round_id)
-          .eq('status', 'pending')
           .select('*, events(code, tables(id))')
           .single()
 
-        if (error) return NextResponse.json({ error: '更新失敗' }, { status: 500 })
+        if (error || !round) return NextResponse.json({ error: '更新失敗' }, { status: 500 })
 
-        // 初始化 results_cache
+        // 初始化 results_cache（table + group）
         const eventData = round.events as { code: string; tables: Array<{ id: string }> } | undefined
         if (eventData?.tables) {
           const cacheEntries = eventData.tables.map((t: { id: string }) => ({
@@ -56,6 +65,31 @@ export async function POST(request: NextRequest) {
           })
         }
 
+        // 初始化 group cache（有分組時）
+        if (event_id) {
+          const { data: eventGroups } = await supabase
+            .from('groups')
+            .select('id')
+            .eq('event_id', event_id)
+          if (eventGroups && eventGroups.length > 0) {
+            const groupCacheEntries = eventGroups.map((g: { id: string }) => ({
+              round_id,
+              target_type: 'group',
+              target_id: g.id,
+              total_score: 0,
+              vote_count: 0,
+            }))
+            await supabase.from('results_cache').upsert(groupCacheEntries, {
+              onConflict: 'round_id,target_type,target_id',
+            })
+          }
+        }
+
+        // 自動把活動狀態改成 active（從 draft 開始第一回合時）
+        if (event_id) {
+          await supabase.from('events').update({ status: 'active' }).eq('id', event_id).eq('status', 'draft')
+        }
+
         return NextResponse.json({ success: true, round })
       }
 
@@ -66,10 +100,17 @@ export async function POST(request: NextRequest) {
           .from('rounds')
           .update({ status: 'closed', closed_at: new Date().toISOString() })
           .eq('id', round_id)
-          .select('*, events(code)')
+          .select('*, events(code, id, config)')
           .single()
 
         if (error) return NextResponse.json({ error: '更新失敗' }, { status: 500 })
+
+        // 清除倒數計時
+        const stopEventData = round.events as { id: string; config: Record<string, unknown> } | undefined
+        if (stopEventData?.id) {
+          const { countdown_end: _removed, ...cleanConfig } = (stopEventData.config ?? {}) as Record<string, unknown>
+          await supabase.from('events').update({ config: cleanConfig }).eq('id', stopEventData.id)
+        }
 
         // #3 fix: 用 RPC 一次完成排名計算，不再 N+1
         // Bug 4 fix: 檢查 error
@@ -128,12 +169,32 @@ export async function POST(request: NextRequest) {
       }
 
       case 'countdown': {
-        // #6 fix: seconds 邊界限制 1-300
+        // 把倒數計時寫入 event config，讓 live endpoint 回傳給所有前端
         const rawSeconds = (data as { seconds: number })?.seconds ?? 30
         const seconds = Math.max(1, Math.min(300, Math.floor(rawSeconds)))
         if (!event_id) return NextResponse.json({ error: '缺少 event_id' }, { status: 400 })
 
-        return NextResponse.json({ success: true, countdown: seconds })
+        // 讀取現有 config
+        const { data: evt } = await supabase
+          .from('events')
+          .select('config')
+          .eq('id', event_id)
+          .single()
+
+        const currentConfig = (evt?.config as Record<string, unknown>) ?? {}
+        const countdownEnd = new Date(Date.now() + seconds * 1000).toISOString()
+
+        // 寫入 countdown_end 時間戳
+        const { error: cdError } = await supabase
+          .from('events')
+          .update({
+            config: { ...currentConfig, countdown_end: countdownEnd },
+          })
+          .eq('id', event_id)
+
+        if (cdError) return NextResponse.json({ error: '設定倒數失敗' }, { status: 500 })
+
+        return NextResponse.json({ success: true, countdown: seconds, countdown_end: countdownEnd })
       }
 
       case 'finalize': {
@@ -150,6 +211,79 @@ export async function POST(request: NextRequest) {
           return NextResponse.json({ error: '結束活動失敗' }, { status: 500 })
         }
 
+        return NextResponse.json({ success: true })
+      }
+
+      case 'reactivate': {
+        // 讓主持人可以從 finished 狀態回到 active
+        if (!event_id) return NextResponse.json({ error: '缺少 event_id' }, { status: 400 })
+
+        const { error: reactivateError } = await supabase
+          .from('events')
+          .update({ status: 'active' })
+          .eq('id', event_id)
+
+        if (reactivateError) {
+          console.error('[Admin/Round] reactivate failed:', reactivateError)
+          return NextResponse.json({ error: '重新啟動失敗' }, { status: 500 })
+        }
+
+        return NextResponse.json({ success: true })
+      }
+
+      case 'add_round': {
+        // 主持人在進行中新增回合
+        if (!event_id) return NextResponse.json({ error: '缺少 event_id' }, { status: 400 })
+        const { title: newTitle, type_id: newTypeId } = (data ?? {}) as { title?: string; type_id?: string }
+        if (!newTitle) return NextResponse.json({ error: '缺少回合標題' }, { status: 400 })
+        const validTypes = ['scoring', 'quiz', 'cheer', 'custom']
+        if (newTypeId && !validTypes.includes(newTypeId)) {
+          return NextResponse.json({ error: `無效的回合類型，允許：${validTypes.join('/')}` }, { status: 400 })
+        }
+
+        // 取得目前最大 seq
+        const { data: lastRound } = await supabase
+          .from('rounds')
+          .select('seq')
+          .eq('event_id', event_id)
+          .order('seq', { ascending: false })
+          .limit(1)
+          .single()
+
+        const nextSeq = (lastRound?.seq ?? 0) + 1
+
+        const { data: newRound, error: addError } = await supabase
+          .from('rounds')
+          .insert({
+            event_id,
+            type_id: newTypeId || 'scoring',
+            seq: nextSeq,
+            title: newTitle,
+            config: { scale_min: 1, scale_max: 10 },
+          })
+          .select()
+          .single()
+
+        if (addError) return NextResponse.json({ error: '新增回合失敗' }, { status: 500 })
+        return NextResponse.json({ success: true, round: newRound })
+      }
+
+      case 'delete_round': {
+        // 刪除待開始的回合（只能刪 pending 狀態）
+        if (!round_id) return NextResponse.json({ error: '缺少 round_id' }, { status: 400 })
+
+        const { data: targetRound } = await supabase
+          .from('rounds')
+          .select('status')
+          .eq('id', round_id)
+          .single()
+
+        if (!targetRound) return NextResponse.json({ error: '回合不存在' }, { status: 404 })
+        if (targetRound.status !== 'pending') {
+          return NextResponse.json({ error: '只能刪除「待開始」的回合' }, { status: 400 })
+        }
+
+        await supabase.from('rounds').delete().eq('id', round_id)
         return NextResponse.json({ success: true })
       }
 

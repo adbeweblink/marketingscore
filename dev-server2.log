@@ -1,0 +1,40 @@
+▲ Next.js 16.2.1 (Turbopack)
+- Local:         http://localhost:3708
+- Network:       http://172.25.144.1:3708
+- Environments: .env.local
+✓ Ready in 487ms
+- Experiments (use with caution):
+  · serverActions
+
+ POST /api/admin/round 401 in 365ms (next.js: 346ms, application-code: 19ms)
+ POST /api/auth/liff 400 in 197ms (next.js: 190ms, application-code: 7ms)
+ POST /api/vote 400 in 254ms (next.js: 247ms, application-code: 7ms)
+ POST /api/admin/round 401 in 5ms (next.js: 1990µs, application-code: 3ms)
+ POST /api/admin/round 401 in 6ms (next.js: 2ms, application-code: 4ms)
+ GET /api/results?event_code= 400 in 185ms (next.js: 180ms, application-code: 4ms)
+ POST /api/admin/round 401 in 5ms (next.js: 1602µs, application-code: 4ms)
+ POST /api/admin/round 401 in 6ms (next.js: 1887µs, application-code: 4ms)
+ POST /api/admin/round 401 in 7ms (next.js: 3ms, application-code: 5ms)
+ POST /api/admin/round 401 in 5ms (next.js: 1863µs, application-code: 4ms)
+ GET /api/admin/events 401 in 53ms (next.js: 48ms, application-code: 5ms)
+ GET /api/admin/events 200 in 369ms (next.js: 1901µs, application-code: 367ms)
+ GET /api/admin/events 200 in 199ms (next.js: 88ms, application-code: 111ms)
+ GET /api/admin/events 200 in 121ms (next.js: 1843µs, application-code: 119ms)
+ GET /api/admin/events/a1b2c3d4-0000-0000-0000-000000000001?key=e6b9fa8370239348014a067f3d675379 200 in 1301ms (next.js: 893ms, application-code: 408ms)
+ GET /api/events/ADO326/status 200 in 1039ms (next.js: 789ms, application-code: 251ms)
+ GET /api/events/ADO326/live 200 in 1086ms (next.js: 853ms, application-code: 233ms)
+ POST /api/admin/round 200 in 201ms (next.js: 2ms, application-code: 199ms)
+ POST /api/auth/liff 200 in 518ms (next.js: 2ms, application-code: 516ms)
+ POST /api/vote 403 in 112ms (next.js: 2ms, application-code: 110ms)
+ GET /api/events/ADO326/live 200 in 295ms (next.js: 9ms, application-code: 286ms)
+ POST /api/admin/round 200 in 171ms (next.js: 2ms, application-code: 169ms)
+ POST /api/vote 200 in 340ms (next.js: 1345µs, application-code: 339ms)
+ POST /api/admin/round 200 in 181ms (next.js: 1298µs, application-code: 180ms)
+ POST /api/admin/round 200 in 155ms (next.js: 1357µs, application-code: 154ms)
+ GET /api/results?event_code=ADO326 200 in 366ms (next.js: 1633µs, application-code: 364ms)
+ POST /api/admin/round 200 in 108ms (next.js: 1374µs, application-code: 106ms)
+ POST /api/admin/round 200 in 129ms (next.js: 1319µs, application-code: 128ms)
+ POST /api/admin/events 200 in 179ms (next.js: 1357µs, application-code: 178ms)
+ DELETE /api/admin/events/122a9f5f-b6b8-44d6-adbc-08f1466108ef 200 in 520ms (next.js: 9ms, application-code: 511ms)
+ GET /api/admin/report/a1b2c3d4-0000-0000-0000-000000000001?key=e6b9fa8370239348014a067f3d675379 200 in 1003ms (next.js: 818ms, application-code: 185ms)
+[?25h

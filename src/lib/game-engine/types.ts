@@ -10,7 +10,12 @@ export function registerEngine(engine: GameEngine) {
 
 export function getEngine(type: RoundType): GameEngine {
   const engine = engines.get(type)
-  if (!engine) throw new Error(`未知的遊戲模式: ${type}`)
+  // custom 類型 fallback 到 scoring engine
+  if (!engine) {
+    const fallback = engines.get('scoring')
+    if (fallback) return fallback
+    throw new Error(`未知的遊戲模式: ${type}`)
+  }
   return engine
 }
 

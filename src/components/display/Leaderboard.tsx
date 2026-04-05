@@ -61,7 +61,7 @@ export function Leaderboard({
             >
               {/* 排名 */}
               <div className="flex-shrink-0 w-16 text-center">
-                <span className="text-4xl font-black">
+                <span className={`text-4xl font-black ${RANK_EMOJI[rank] ? '' : 'animate-shimmer'}`}>
                   {RANK_EMOJI[rank] ?? `#${rank}`}
                 </span>
               </div>
@@ -71,9 +71,9 @@ export function Leaderboard({
                 <div className="text-2xl font-bold truncate">
                   {entry.entity_name}
                 </div>
-                {entry.entity_number && (
+                {((entry as unknown as { subtitle?: string }).subtitle || entry.entity_number) && (
                   <div className="text-sm opacity-60">
-                    第 {entry.entity_number} 桌
+                    {(entry as unknown as { subtitle?: string }).subtitle ?? `第 ${entry.entity_number} 桌`}
                   </div>
                 )}
               </div>
@@ -89,7 +89,7 @@ export function Leaderboard({
                   animate={{ opacity: 1 }}
                   transition={{ delay: revealing ? 0.5 : 0 }}
                 >
-                  <div className="text-5xl font-black tabular-nums">
+                  <div className="text-5xl font-black tabular-nums text-gold-200 glow-gold">
                     {formatScore(entry.total_score)}
                   </div>
                   <div className="text-xs opacity-50 mt-1">分</div>

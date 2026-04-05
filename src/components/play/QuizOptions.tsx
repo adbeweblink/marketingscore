@@ -62,11 +62,11 @@ export function QuizOptions({
   }
 
   return (
-    <div className="w-full max-w-sm mx-auto px-4 py-6 space-y-6">
+    <div className="w-full max-w-sm mx-auto px-3 py-4 space-y-5">
       {/* 題目 + 說明 */}
       <div className="text-center">
         <div className="text-3xl mb-3">🤔</div>
-        <div className="text-xl font-bold text-white mb-2">
+        <div className="text-lg font-bold text-white mb-2 leading-snug break-words">
           {question}
         </div>
         <div className="text-white/40 text-sm">
@@ -75,7 +75,7 @@ export function QuizOptions({
       </div>
 
       {/* 選項 */}
-      <div className="grid grid-cols-2 gap-3">
+      <div className="grid grid-cols-2 gap-2">
         {options.map((option, index) => (
           <motion.button
             key={option.id}
@@ -86,8 +86,8 @@ export function QuizOptions({
             onClick={() => handleSelect(option.id)}
             disabled={disabled || option.disabled || submitted}
             className={cn(
-              'relative py-6 px-4 rounded-2xl border-2 text-center transition-all',
-              'font-bold text-lg',
+              'relative min-h-[56px] py-3 px-3 rounded-2xl border-2 text-center transition-all',
+              'font-bold text-base leading-tight break-words',
               option.disabled
                 ? 'opacity-25 cursor-not-allowed border-white/5 bg-white/5 line-through'
                 : selected === option.id

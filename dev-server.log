@@ -1,0 +1,12 @@
+﻿▲ Next.js 16.2.1 (Turbopack)
+- Local:         http://localhost:3708
+- Network:       http://172.25.144.1:3708
+- Environments: .env.local
+✓ Ready in 488ms
+- Experiments (use with caution):
+  · serverActions
+
+ GET /api/admin/events 500 in 951ms (next.js: 614ms, application-code: 337ms)
+ GET /api/admin/events 500 in 64ms (next.js: 3ms, application-code: 61ms)
+ GET /api/admin/events 500 in 152ms (next.js: 77ms, application-code: 75ms)
+[?25h

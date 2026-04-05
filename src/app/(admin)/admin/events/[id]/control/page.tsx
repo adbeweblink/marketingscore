@@ -7,11 +7,12 @@ import { motion } from 'framer-motion'
 import {
   Play, Square, SkipForward, Eye, Trophy,
   Plus, Minus, Timer, Users, Monitor, Loader2, AlertCircle,
-  Share2, Copy, X, Check
+  Share2, Copy, X, Check, RotateCcw, ArrowLeft, QrCode, LayoutList, RefreshCw
 } from 'lucide-react'
 import { QRCodeSVG } from 'qrcode.react'
 import { cn } from '@/lib/utils'
 import { useLiveSync } from '@/hooks/useLiveSync'
+import { useHostActions } from '@/hooks/useHostActions'
 import type { Round, RoundStatus, Table } from '@/types/database'
 
 // 回合狀態顯示設定
@@ -40,20 +41,45 @@ function HostControlInner({
   const { id } = use(params)
   const searchParams = useSearchParams()
 
-  // 從 URL searchParam ?key=xxx 取得 admin key（MVP 簡單方案）
-  const adminKey = searchParams.get('key') ?? ''
+  // Admin key：先看 URL ?key=，再看 localStorage，都沒有就顯示輸入框
+  const urlKey = searchParams.get('key') ?? ''
+  const [adminKey, setAdminKey] = useState('')
+  const [keyInput, setKeyInput] = useState('')
+  const [keyError, setKeyError] = useState(false)
+
+  // 初始化 admin key（優先 URL > localStorage）
+  useEffect(() => {
+    if (urlKey) {
+      setAdminKey(urlKey)
+      localStorage.setItem('ms_admin_key', urlKey)
+    } else {
+      const stored = localStorage.getItem('ms_admin_key')
+      if (stored) setAdminKey(stored)
+    }
+  }, [urlKey])
+
+  // 活動狀態追蹤
+  const [eventStatus, setEventStatus] = useState<string>('active')
 
   // 頁面狀態
   const [rounds, setRounds] = useState<Round[]>([])
   const [tables, setTables] = useState<Table[]>([])
   const [activeRound, setActiveRound] = useState<string | null>(null)
-  const [voteProgress, setVoteProgress] = useState({ voted: 0, total: 0 })
+  const [voteProgress, setVoteProgress] = useState({ voted: 0, total: 0, votesPerPerson: 1 })
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [actionLoading, setActionLoading] = useState(false)
+  // actionLoading 由 useHostActions 提供（見下方），此處不另行宣告
+
+  // 新增回合表單
+  const [showAddRound, setShowAddRound] = useState(false)
+  const [newRoundTitle, setNewRoundTitle] = useState('')
+  const [newRoundType, setNewRoundType] = useState('scoring')
 
   // 手動加減分狀態：桌次 ID → 目前分數
   const [manualScores, setManualScores] = useState<Record<string, number>>({})
+
+  // 大螢幕顯示模式（'auto' = 跟隨回合狀態）
+  const [displayMode, setDisplayMode] = useState<string>('auto')
 
   // #2 分享連結 modal
   const [showShareModal, setShowShareModal] = useState(false)
@@ -81,7 +107,8 @@ function HostControlInner({
     : `/play/${eventCode || id}`
 
   // 全員投完判斷
-  const allVoted = voteProgress.total > 0 && voteProgress.voted >= voteProgress.total
+  // 全員投完 = 票數 >= 人數 × 每人需投票數
+  const allVoted = voteProgress.total > 0 && voteProgress.voted >= voteProgress.total * (voteProgress.votesPerPerson ?? 1)
 
   // ─── 載入活動資料 ───────────────────────────────────────────────
   const loadEventData = useCallback(async () => {
@@ -96,6 +123,7 @@ function HostControlInner({
       setRounds(data.rounds ?? [])
       setTables(data.tables ?? [])
       if (data.event_code) setEventCode(data.event_code)
+      if (data.event?.status) setEventStatus(data.event.status)
       const count = data.participant_count ?? 0
       setVoteProgress((prev) => ({ ...prev, total: count }))
 
@@ -117,7 +145,6 @@ function HostControlInner({
     if (adminKey) {
       loadEventData()
     } else {
-      setError('缺少 admin key，請在 URL 加上 ?key=YOUR_KEY')
       setLoading(false)
     }
   }, [adminKey, loadEventData])
@@ -130,149 +157,90 @@ function HostControlInner({
       if (adminKey) loadEventData()
     }, [adminKey, loadEventData]),
     // 投票進度：直接更新
-    useCallback((voted: number, total: number) => {
-      setVoteProgress({ voted, total })
+    useCallback((voted: number, total: number, votesPerPerson?: number) => {
+      setVoteProgress({ voted, total, votesPerPerson: votesPerPerson ?? 1 })
     }, []),
     {
-      // 有 eventCode 且目前回合是 open 狀態才需要高頻同步
-      enabled: !!eventCode && !!activeRound && currentRound?.status === 'open',
+      // 有 eventCode 就啟動 polling（即使沒有 open 回合也要同步人數）
+      enabled: !!eventCode,
       intervalMs: 1000,
     }
   )
 
-  // ─── 呼叫 Admin Round API ────────────────────────────────────────
-  async function callRoundAPI(
-    action: string,
-    roundId?: string,
-    extraData?: Record<string, unknown>
-  ) {
-    setActionLoading(true)
-    try {
-      const res = await fetch('/api/admin/round', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-admin-key': adminKey,
-        },
-        body: JSON.stringify({
-          action,
-          round_id: roundId ?? activeRound,
-          event_id: id,
-          data: extraData,
-        }),
-      })
+  // ─── useHostActions：統一 action 邏輯（loadEventData 已宣告，可安全引用）
+  const {
+    actionLoading,
+    startRound,
+    stopRound,
+    revealRound,
+    nextRound,
+    addRound: addRoundAction,
+    deleteRound: deleteRoundAction,
+    finalize,
+    reactivate: reactivateAction,
+    setDisplayMode: setDisplayModeAction,
+    manualScore: manualScoreAction,
+    countdown: countdownAction,
+  } = useHostActions({
+    eventId: id,
+    adminKey,
+    rounds,
+    activeRoundId: activeRound,
+    onRoundsUpdate: setRounds,
+    onActiveRoundChange: setActiveRound,
+    onVoteReset: () => setVoteProgress((prev) => ({ ...prev, voted: 0 })),
+    onReload: loadEventData,
+    onError: setError,
+    onEventStatusChange: setEventStatus,
+  })
 
-      if (!res.ok) {
-        const data = await res.json()
-        setError(data.error ?? '操作失敗')
-        return false
-      }
-      return true
-    } catch {
-      setError('網路錯誤，請重試')
-      return false
-    } finally {
-      setActionLoading(false)
-    }
-  }
+  // ─── 主持人動作處理（委派給 useHostActions）─────────────────────
 
-  // ─── 主持人動作處理 ──────────────────────────────────────────────
   async function handleAction(action: string, roundId?: string) {
-    const targetRoundId = roundId ?? activeRound
-
     switch (action) {
-      case 'start': {
+      case 'start':
+        if (roundId) await startRound(roundId)
+        break
+      case 'stop':
+        await stopRound()
+        break
+      case 'reveal':
+        await revealRound()
+        break
+      case 'next':
+        await nextRound()
+        break
+      case 'countdown':
+        await countdownAction()
+        break
+      case 'show_final':
+        await finalize()
+        break
+      case 'reactivate':
+        await reactivateAction()
+        break
+      case 'add_round':
+        if (!newRoundTitle.trim()) return
+        await addRoundAction(newRoundTitle.trim(), newRoundType)
+        setNewRoundTitle('')
+        setShowAddRound(false)
+        break
+      case 'delete_round':
         if (!roundId) return
-        // 先樂觀更新 UI，再打 API
-        setActiveRound(roundId)
-        setRounds((prev) =>
-          prev.map((r) => (r.id === roundId ? { ...r, status: 'open' as RoundStatus } : r))
-        )
-        setVoteProgress((prev) => ({ ...prev, voted: 0 }))
-
-        const ok = await callRoundAPI('start', roundId)
-        if (!ok) {
-          // 還原樂觀更新
-          setRounds((prev) =>
-            prev.map((r) => (r.id === roundId ? { ...r, status: 'pending' as RoundStatus } : r))
-          )
-          setActiveRound(null)
-        }
+        if (!confirm('確定刪除此回合？')) return
+        await deleteRoundAction(roundId)
         break
-      }
-
-      case 'stop': {
-        setRounds((prev) =>
-          prev.map((r) => (r.id === targetRoundId ? { ...r, status: 'closed' as RoundStatus } : r))
-        )
-        const ok = await callRoundAPI('stop')
-        if (!ok) {
-          setRounds((prev) =>
-            prev.map((r) => (r.id === targetRoundId ? { ...r, status: 'open' as RoundStatus } : r))
-          )
-        }
-        break
-      }
-
-      case 'reveal': {
-        setRounds((prev) =>
-          prev.map((r) => (r.id === targetRoundId ? { ...r, status: 'revealed' as RoundStatus } : r))
-        )
-        const ok = await callRoundAPI('reveal')
-        if (!ok) {
-          setRounds((prev) =>
-            prev.map((r) => (r.id === targetRoundId ? { ...r, status: 'closed' as RoundStatus } : r))
-          )
-        }
-        break
-      }
-
-      case 'next': {
-        const currentIndex = rounds.findIndex((r) => r.id === activeRound)
-        if (currentIndex < rounds.length - 1) {
-          const nextRound = rounds[currentIndex + 1]
-          setActiveRound(nextRound.id)
-          setRounds((prev) =>
-            prev.map((r) => (r.id === nextRound.id ? { ...r, status: 'open' as RoundStatus } : r))
-          )
-          setVoteProgress((prev) => ({ ...prev, voted: 0 }))
-
-          const ok = await callRoundAPI('start', nextRound.id)
-          if (!ok) {
-            setRounds((prev) =>
-              prev.map((r) => (r.id === nextRound.id ? { ...r, status: 'pending' as RoundStatus } : r))
-            )
-            setActiveRound(activeRound)
-          }
-        }
-        break
-      }
-
-      case 'countdown': {
-        await callRoundAPI('countdown', undefined, { seconds: 30 })
-        break
-      }
-
-      case 'show_final': {
-        // Bug 2 fix: 改呼叫 finalize action，把 event status 改成 'finished'
-        await callRoundAPI('finalize')
-        break
-      }
     }
   }
 
-  // ─── 手動加減分（cheer 回合） ────────────────────────────────────
+  // ─── 手動加減分（cheer 回合）委派給 useHostActions ───────────────
   async function handleManualScore(tableId: string, delta: number) {
     // 樂觀更新本地分數
     setManualScores((prev) => ({
       ...prev,
       [tableId]: (prev[tableId] ?? 0) + delta,
     }))
-
-    await callRoundAPI('manual_score', undefined, {
-      table_id: tableId,
-      score_delta: delta,
-    })
+    await manualScoreAction(tableId, delta)
   }
 
   // ─── #2 複製加入連結 ─────────────────────────────────────────────
@@ -295,6 +263,12 @@ function HostControlInner({
     } catch {
       // 複製失敗靜默忽略
     }
+  }
+
+  // ─── 大螢幕模式切換（委派給 useHostActions）──────────────────────
+  async function handleSetDisplayMode(newMode: string) {
+    setDisplayMode(newMode)
+    await setDisplayModeAction(newMode)
   }
 
   // ─── #6 長按結束投票 ─────────────────────────────────────────────
@@ -324,6 +298,48 @@ function HostControlInner({
   }
 
   // ─── 載入中 / 錯誤畫面 ──────────────────────────────────────────
+  // 沒有 admin key 時，顯示輸入框
+  if (!adminKey) {
+    return (
+      <div className="min-h-screen bg-surface-dark flex items-center justify-center p-4">
+        <div className="w-full max-w-sm text-center">
+          <h1 className="text-2xl font-bold text-gold-200 mb-2">主持人控制台</h1>
+          <p className="text-white/40 text-sm mb-6">請輸入管理密碼</p>
+          <input
+            type="password"
+            value={keyInput}
+            onChange={(e) => { setKeyInput(e.target.value); setKeyError(false) }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && keyInput.trim()) {
+                setAdminKey(keyInput.trim())
+                localStorage.setItem('ms_admin_key', keyInput.trim())
+              }
+            }}
+            placeholder="管理密碼"
+            autoFocus
+            className={cn(
+              'w-full px-5 py-4 rounded-2xl bg-surface-card border-2 text-white text-xl text-center placeholder-white/20 focus:outline-none transition-colors',
+              keyError ? 'border-red-500' : 'border-white/10 focus:border-gold-400'
+            )}
+          />
+          {keyError && <p className="text-red-400 text-sm mt-2">密碼錯誤</p>}
+          <button
+            onClick={() => {
+              if (keyInput.trim()) {
+                setAdminKey(keyInput.trim())
+                localStorage.setItem('ms_admin_key', keyInput.trim())
+              }
+            }}
+            disabled={!keyInput.trim()}
+            className="w-full mt-4 py-4 rounded-2xl text-lg font-bold bg-gradient-to-r from-gold-600 to-gold-400 text-surface-dark disabled:opacity-30"
+          >
+            進入
+          </button>
+        </div>
+      </div>
+    )
+  }
+
   if (loading) {
     return (
       <div className="min-h-screen bg-surface-dark flex items-center justify-center">
@@ -343,10 +359,16 @@ function HostControlInner({
           <p className="text-red-300 font-bold mb-2">無法載入</p>
           <p className="text-white/40 text-sm mb-6">{error}</p>
           <button
-            onClick={() => { setError(null); setLoading(true); loadEventData() }}
+            onClick={() => {
+              setAdminKey('')
+              localStorage.removeItem('ms_admin_key')
+              setKeyInput('')
+              setKeyError(true)
+              setError(null)
+            }}
             className="px-6 py-3 rounded-xl font-bold bg-gold-400/20 text-gold-200"
           >
-            重試
+            重新輸入密碼
           </button>
         </div>
       </div>
@@ -355,15 +377,20 @@ function HostControlInner({
 
   // ─── 主頁面 ──────────────────────────────────────────────────────
   return (
-    <div className="min-h-screen bg-surface-dark p-4 pb-32">
+    <div className="min-h-screen bg-surface-dark p-4 pb-40">
       <div className="max-w-lg mx-auto">
         {/* Header */}
-        <div className="text-center mb-4">
-          <h1 className="text-xl font-bold text-gold-200">主持人控制台</h1>
-          <p className="text-xs text-white/30">活動代碼: {eventCode || id}</p>
-          {adminKey && (
-            <p className="text-xs text-green-400/60 mt-0.5">已驗證管理員</p>
-          )}
+        <div className="flex items-center gap-3 mb-4">
+          <a
+            href="/admin"
+            className="p-2 rounded-lg bg-white/5 active:bg-white/10"
+          >
+            <ArrowLeft size={18} className="text-white/50" />
+          </a>
+          <div className="flex-1">
+            <h1 className="text-xl font-bold text-gold-200">主持人控制台</h1>
+            <p className="text-xs text-white/30">活動代碼: {eventCode || id}</p>
+          </div>
         </div>
 
         {/* #1 已加入人數 + #2 分享連結按鈕 */}
@@ -428,7 +455,7 @@ function HostControlInner({
                     <Users size={12} /> 投票進度
                   </span>
                   <span className="flex items-center gap-1.5">
-                    <span>{voteProgress.voted} / {voteProgress.total}</span>
+                    <span>{Math.floor(voteProgress.voted / (voteProgress.votesPerPerson || 1))} / {voteProgress.total} 人完成</span>
                     {allVoted && (
                       <span className="text-green-400 font-bold animate-pulse">全員投完！</span>
                     )}
@@ -447,14 +474,14 @@ function HostControlInner({
                     )}
                     style={{
                       width: voteProgress.total > 0
-                        ? `${(voteProgress.voted / voteProgress.total) * 100}%`
+                        ? `${Math.min(100, (voteProgress.voted / (voteProgress.total * (voteProgress.votesPerPerson || 1))) * 100)}%`
                         : '0%'
                     }}
                   />
                 </div>
                 {allVoted && (
                   <p className="text-center text-green-400 text-xs mt-1.5 font-bold animate-bounce">
-                    ✓ 所有人投票完畢，可以結束投票了！
+                    ✓ 全員完成評分，可以長按「結束投票」了
                   </p>
                 )}
               </div>
@@ -482,7 +509,7 @@ function HostControlInner({
                       />
                       <span className="relative flex items-center gap-2">
                         <Square size={16} />
-                        {stopPressProgress > 0 ? `${Math.round(stopPressProgress)}%` : '長按結束投票'}
+                        {stopPressProgress > 0 ? `長按中 ${Math.round(stopPressProgress)}%` : '長按結束投票'}
                       </span>
                     </button>
                   </div>
@@ -530,7 +557,8 @@ function HostControlInner({
         {/* 手動加減分（cheer 回合） */}
         {currentRound?.type_id === 'cheer' && tables.length > 0 && (
           <div className="mb-6 p-4 rounded-xl bg-surface-card border border-white/5">
-            <h3 className="text-sm font-bold text-gold-200/60 mb-3">手動加減分</h3>
+            <h3 className="text-sm font-bold text-gold-200/60 mb-1">根據歡呼聲手動加減分</h3>
+            <p className="text-white/25 text-xs mb-3">依現場反應調整各桌分數，完成後點「揭曉結果」</p>
             <div className="space-y-2">
               {tables.map((table) => (
                 <div key={table.id} className="flex items-center justify-between py-2">
@@ -539,7 +567,7 @@ function HostControlInner({
                     <button
                       onClick={() => handleManualScore(table.id, -1)}
                       disabled={actionLoading}
-                      className="w-8 h-8 rounded-lg bg-red-500/20 text-red-300 flex items-center justify-center
+                      className="w-11 h-11 rounded-lg bg-red-500/20 text-red-300 flex items-center justify-center
                         disabled:opacity-50"
                     >
                       <Minus size={14} />
@@ -550,7 +578,7 @@ function HostControlInner({
                     <button
                       onClick={() => handleManualScore(table.id, 1)}
                       disabled={actionLoading}
-                      className="w-8 h-8 rounded-lg bg-green-500/20 text-green-300 flex items-center justify-center
+                      className="w-11 h-11 rounded-lg bg-green-500/20 text-green-300 flex items-center justify-center
                         disabled:opacity-50"
                     >
                       <Plus size={14} />
@@ -562,19 +590,107 @@ function HostControlInner({
           </div>
         )}
 
+        {/* 活動已結束提示 + 重新開始 */}
+        {eventStatus === 'finished' && (
+          <div className="mb-6 p-6 rounded-xl bg-gold-400/10 border-2 border-gold-400/30 text-center">
+            <Trophy className="w-12 h-12 text-gold-400 mx-auto mb-3" />
+            <h2 className="text-xl font-bold text-gold-200 mb-2">活動圓滿結束</h2>
+            <p className="text-white/40 text-sm mb-4">最終排名已顯示在大螢幕，可查看完整報告</p>
+            <div className="flex gap-2">
+              <a
+                href={`/admin/events/${id}/report`}
+                className="flex-1 flex items-center justify-center gap-2 py-3 rounded-xl font-bold
+                  bg-white/5 text-white/60"
+              >
+                查看報告
+              </a>
+              <button
+                onClick={() => handleAction('reactivate')}
+                disabled={actionLoading}
+                className="flex-1 flex items-center justify-center gap-2 py-3 rounded-xl font-bold
+                  bg-gold-400/20 text-gold-200 disabled:opacity-50"
+              >
+                <RotateCcw size={16} /> 重新開始
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* 操作提示 */}
-        <div className="mb-4 p-4 rounded-xl bg-gold-400/5 border border-gold-400/20">
-          <p className="text-gold-200/80 text-sm font-bold mb-1">📋 操作流程</p>
-          <p className="text-white/40 text-xs">
-            1. 點 ▶ 開始回合 → 2. 等大家投完 → 3. 長按結束 → 4. 揭曉結果 → 5. 下一輪
-          </p>
+        {eventStatus !== 'finished' && (
+        <div className="mb-4 p-4 rounded-xl bg-gold-400/5 border border-gold-400/20 space-y-2">
+          <p className="text-gold-200/80 text-sm font-bold">操作流程</p>
+          <ol className="text-white/40 text-xs space-y-1 list-none">
+            <li><span className="text-gold-300/60 font-bold mr-1">1.</span>從下方回合列表點「開始」啟動本輪投票</li>
+            <li><span className="text-gold-300/60 font-bold mr-1">2.</span>等待所有人完成評分（進度條變綠即全員完成）</li>
+            <li><span className="text-gold-300/60 font-bold mr-1">3.</span>長按「結束投票」按鈕 2 秒以停止收票</li>
+            <li><span className="text-gold-300/60 font-bold mr-1">4.</span>點「揭曉結果」讓大螢幕顯示本輪排行榜</li>
+            <li><span className="text-gold-300/60 font-bold mr-1">5.</span>點「下一輪」繼續進行，或於底部點「最終排名」結束活動</li>
+          </ol>
         </div>
+        )}
 
         {/* 回合列表 */}
         <div className="space-y-2">
-          <h3 className="text-sm font-bold text-white/30 mb-2">
-            所有回合（{rounds.length} 個）
-          </h3>
+          <div className="flex items-center justify-between mb-2">
+            <h3 className="text-sm font-bold text-white/30">
+              所有回合（{rounds.length} 個）
+            </h3>
+            <button
+              onClick={() => setShowAddRound(!showAddRound)}
+              className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-medium
+                bg-gold-400/10 text-gold-200 active:bg-gold-400/20"
+            >
+              <Plus size={12} /> 新增回合
+            </button>
+          </div>
+
+          {/* 新增回合表單 */}
+          {showAddRound && (
+            <div className="p-4 rounded-xl bg-surface-card border border-gold-400/20 mb-2">
+              <input
+                type="text"
+                value={newRoundTitle}
+                onChange={(e) => setNewRoundTitle(e.target.value)}
+                placeholder="回合名稱（例：安可曲挑戰）"
+                className="w-full px-4 py-3 rounded-xl bg-surface-elevated border border-white/10
+                  text-white placeholder-white/20 focus:border-gold-400 focus:outline-none mb-3"
+              />
+              <div className="flex gap-2 mb-3">
+                {(['scoring', 'quiz', 'cheer'] as const).map(type => (
+                  <button
+                    key={type}
+                    onClick={() => setNewRoundType(type)}
+                    className={cn(
+                      'flex-1 py-2 rounded-lg text-xs font-bold transition-colors',
+                      newRoundType === type
+                        ? 'bg-gold-400/20 text-gold-200 border border-gold-400/30'
+                        : 'bg-white/5 text-white/40 border border-white/5'
+                    )}
+                  >
+                    {type === 'scoring' ? '評分' : type === 'quiz' ? '猜謎' : '歡呼'}
+                  </button>
+                ))}
+              </div>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => setShowAddRound(false)}
+                  className="flex-1 py-2.5 rounded-xl text-sm font-medium bg-white/5 text-white/40"
+                >
+                  取消
+                </button>
+                <button
+                  onClick={() => handleAction('add_round')}
+                  disabled={!newRoundTitle.trim() || actionLoading}
+                  className="flex-1 py-2.5 rounded-xl text-sm font-bold
+                    bg-gradient-to-r from-gold-600 to-gold-400 text-surface-dark
+                    disabled:opacity-30"
+                >
+                  新增
+                </button>
+              </div>
+            </div>
+          )}
           {rounds.map((round) => (
             <motion.div
               key={round.id}
@@ -601,14 +717,25 @@ function HostControlInner({
                 {STATUS_LABELS[round.status]}
               </span>
               {round.status === 'pending' && (
-                <button
-                  onClick={() => handleAction('start', round.id)}
-                  disabled={actionLoading}
-                  className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-green-500/20 text-green-300 text-sm font-bold
-                    disabled:opacity-50"
-                >
-                  <Play size={16} /> 開始
-                </button>
+                <div className="flex gap-1.5">
+                  <button
+                    onClick={() => handleAction('delete_round', round.id)}
+                    disabled={actionLoading}
+                    className="w-8 h-8 flex items-center justify-center rounded-lg bg-red-500/10 text-red-400
+                      disabled:opacity-50"
+                    title="刪除回合"
+                  >
+                    <X size={14} />
+                  </button>
+                  <button
+                    onClick={() => handleAction('start', round.id)}
+                    disabled={actionLoading}
+                    className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-green-500/20 text-green-300 text-sm font-bold
+                      disabled:opacity-50"
+                  >
+                    <Play size={16} /> 開始
+                  </button>
+                </div>
               )}
             </motion.div>
           ))}
@@ -621,8 +748,37 @@ function HostControlInner({
         </div>
 
         {/* 底部快捷工具列 */}
-        <div className="fixed bottom-0 left-0 right-0 p-4 bg-surface-dark/90 backdrop-blur-lg border-t border-white/5">
-          <div className="max-w-lg mx-auto flex gap-2">
+        <div className="fixed bottom-0 left-0 right-0 bg-surface-dark/90 backdrop-blur-lg border-t border-white/5">
+          {/* 大螢幕模式切換列 */}
+          <div className="max-w-lg mx-auto px-4 pt-3 pb-1">
+            <p className="text-xs text-white/30 mb-2 flex items-center gap-1.5">
+              <Monitor size={11} /> 大螢幕模式
+            </p>
+            <div className="flex gap-1.5">
+              {([
+                { key: 'auto', label: '自動', icon: <RefreshCw size={13} /> },
+                { key: 'idle', label: 'QR', icon: <QrCode size={13} /> },
+                { key: 'leaderboard', label: '排行', icon: <LayoutList size={13} /> },
+                { key: 'final', label: '最終', icon: <Trophy size={13} /> },
+              ] as const).map(({ key, label, icon }) => (
+                <button
+                  key={key}
+                  onClick={() => handleSetDisplayMode(key)}
+                  className={cn(
+                    'flex-1 flex flex-col items-center gap-0.5 min-h-[44px] py-2 px-0.5 rounded-xl text-xs font-medium transition-colors',
+                    displayMode === key
+                      ? 'bg-gold-400/20 text-gold-200 border border-gold-400/40'
+                      : 'bg-white/5 text-white/40 border border-transparent active:bg-white/10'
+                  )}
+                >
+                  {icon}
+                  <span className="text-[10px] leading-tight">{label}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="max-w-lg mx-auto flex gap-2 p-4 pt-2">
             <a
               href={`/display/${eventCode || id}`}
               target="_blank"

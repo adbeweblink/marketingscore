@@ -1,17 +1,18 @@
 'use client'
 
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { use } from 'react'
 import { ParticleBackground } from '@/components/display/ParticleBackground'
 import { Leaderboard } from '@/components/display/Leaderboard'
 import { ScoreCounter } from '@/components/display/ScoreCounter'
+import { VoteBalls } from '@/components/display/VoteBalls'
 import { useLiveSync, type LiveState } from '@/hooks/useLiveSync'
+import { resolveCurrentRound, resolveDisplayMode, type DisplayMode } from '@/hooks/useEventState'
 import { useLeaderboardStore } from '@/hooks/useLeaderboard'
 import { useRoundStore } from '@/hooks/useRound'
 import { QRCodeSVG } from 'qrcode.react'
-import type { ScoreBoard, Round } from '@/types/database'
+import type { ScoreBoard, Round, Group } from '@/types/database'
 
-type DisplayMode = 'idle' | 'round-intro' | 'voting' | 'counting' | 'reveal' | 'final'
 
 export default function DisplayPage({
   params,
@@ -20,14 +21,22 @@ export default function DisplayPage({
 }) {
   const { code } = use(params)
   const [mode, setMode] = useState<DisplayMode>('idle')
-  const [eventName, setEventName] = useState('MarketingScore')
+  const [eventName, setEventName] = useState('載入中...')
   const [voteProgress, setVoteProgress] = useState({ voted: 0, total: 0 })
+  const [recentVoters, setRecentVoters] = useState<string[]>([])
   const [particleIntensity, setParticleIntensity] = useState<'low' | 'normal' | 'high' | 'celebration'>('low')
+  // 主持人手動覆蓋模式（'auto' = 跟隨回合狀態）
+  const [manualDisplayMode, setManualDisplayMode] = useState<string>('auto')
 
   // 記錄上一次的 round status，用於偵測狀態轉換
   const lastRoundStatusRef = useRef<string | null>(null)
   // 排行榜 3 秒 polling ref
   const leaderboardPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  // 組別排名切換
+  // 組別排行已改為自動判斷（groups.length > 0 直接顯示組排名）
+  // 活動分組設定（從 API 初始化時拉取）
+  const [groups, setGroups] = useState<Group[]>([])
 
   const { entries, setEntries } = useLeaderboardStore()
   const { currentRound, setCurrentRound, countdown, setCountdown, tick } = useRoundStore()
@@ -39,15 +48,22 @@ export default function DisplayPage({
     return () => clearInterval(timer)
   }, [countdown, tick])
 
-  // ─── 初始化：取得活動名稱與初始排行榜 ─────────────────────────
+  // ─── 初始化：取得活動名稱、初始排行榜與分組設定 ─────────────────
   useEffect(() => {
     async function fetchInitial() {
       try {
-        const res = await fetch(`/api/results?event_code=${code}`)
-        if (res.ok) {
-          const data = await res.json()
+        const [resultsRes, groupsRes] = await Promise.all([
+          fetch(`/api/results?event_code=${code}`),
+          fetch(`/api/events/${code}/groups`),
+        ])
+        if (resultsRes.ok) {
+          const data = await resultsRes.json()
           if (data.event_name) setEventName(data.event_name)
-          if (data.rankings) setEntries(data.rankings as ScoreBoard[])
+          if (data.results) setEntries(data.results as ScoreBoard[])
+        }
+        if (groupsRes.ok) {
+          const gData = await groupsRes.json()
+          if (gData.groups) setGroups(gData.groups as Group[])
         }
       } catch {
         // 靜默忽略，useLiveSync 會持續 polling
@@ -62,7 +78,7 @@ export default function DisplayPage({
       const res = await fetch(`/api/results?event_code=${code}`)
       if (!res.ok) return
       const data = await res.json()
-      if (data.rankings) setEntries(data.rankings as ScoreBoard[])
+      if (data.results) setEntries(data.results as ScoreBoard[])
     } catch {
       // 靜默忽略
     }
@@ -87,65 +103,116 @@ export default function DisplayPage({
     }
   }, [mode, fetchLatestResults])
 
-  // ─── useLiveSync：1 秒 polling，偵測回合狀態切換 ──────────────
-  const handleRoundChange = useCallback((data: LiveState) => {
-    // Bug 2 fix: event_status === 'finished' 時切到 final mode
-    if (data.event_status === 'finished') {
-      setMode('final')
-      setParticleIntensity('celebration')
-      fetchLatestResults()
-      return
-    }
+  // ─── 組別排名（從桌次分數聚合計算）─────────────────────────────
+  const groupRankings = useMemo<ScoreBoard[]>(() => {
+    if (groups.length === 0 || entries.length === 0) return []
 
-    const newStatus = data.current_round_status
-    const prevStatus = lastRoundStatusRef.current
+    // 建立 table_id → score 對照表
+    const tableScoreMap = new Map<string, number>(
+      entries.filter((e) => e.entity_type === 'table').map((e) => [e.entity_id, e.total_score])
+    )
 
-    // 狀態真的改變時才更新畫面
-    if (newStatus !== prevStatus) {
-      lastRoundStatusRef.current = newStatus
-
-      if (newStatus === 'open') {
-        // 轉換為 Round 型別
-        if (data.current_round_id) {
-          setCurrentRound({
-            id: data.current_round_id,
-            seq: data.current_round_seq ?? 0,
-            title: data.current_round_title ?? '',
-            type_id: data.current_round_type ?? '',
-            status: 'open',
-            config: data.current_round_config ?? null,
-          } as unknown as Round)
-        }
-        setMode('voting')
-        setParticleIntensity('normal')
-        // 立即拉一次排行榜
-        fetchLatestResults()
-      } else if (newStatus === 'closed') {
-        setMode('counting')
-        setParticleIntensity('high')
-      } else if (newStatus === 'revealed') {
-        setMode('reveal')
-        setParticleIntensity('celebration')
-        // 揭曉時立即拉最新排行榜
-        fetchLatestResults()
-      } else if (newStatus === null) {
-        // 無進行中回合（活動剛開始或回合間空檔）
-        if (prevStatus !== null) {
-          setMode('idle')
-          setParticleIntensity('low')
+    const groupScores = groups.map((g) => {
+      const totalScore = g.table_ids.reduce((sum: number, tid: string) => sum + (tableScoreMap.get(tid) ?? 0), 0)
+      const roundScores: Record<string, number> = {}
+      // 從各桌的 round_scores 聚合
+      for (const tid of g.table_ids) {
+        const tableEntry = entries.find((e) => e.entity_id === tid)
+        if (tableEntry) {
+          for (const [roundId, score] of Object.entries(tableEntry.round_scores)) {
+            roundScores[roundId] = (roundScores[roundId] ?? 0) + score
+          }
         }
       }
+      // 找出組內桌號備註
+      const tableNumbers = (g.table_ids ?? [])
+        .map((tid: string) => entries.find(e => e.entity_id === tid)?.entity_number)
+        .filter((n): n is number => n != null)
+        .sort((a, b) => a - b)
+
+      return {
+        entity_type: 'group' as const,
+        entity_id: g.id,
+        entity_name: `${g.name}`,
+        entity_number: undefined,
+        total_score: totalScore,
+        round_scores: roundScores,
+        // 備註哪幾桌（Leaderboard 會讀 entity_name 後面的副標題）
+        subtitle: tableNumbers.length > 0 ? `第 ${tableNumbers.join('、')} 桌` : undefined,
+      }
+    })
+
+    return groupScores.sort((a, b) => b.total_score - a.total_score)
+  }, [groups, entries])
+
+  // ─── useLiveSync：1 秒 polling，偵測回合狀態切換 ──────────────
+  const handleRoundChange = useCallback((data: LiveState) => {
+    // 更新手動模式標記
+    const apiDisplayMode = data.display_mode ?? 'auto'
+    setManualDisplayMode(apiDisplayMode)
+
+    // 用共用推導函式計算目前應顯示的模式
+    const currentRound = resolveCurrentRound(data.rounds)
+    const resolvedMode = resolveDisplayMode(currentRound, data.event_status, apiDisplayMode)
+
+    // 偵測 round status 是否真的改變（避免不必要的重渲染）
+    const newStatus = data.current_round_status
+    const prevStatus = lastRoundStatusRef.current
+    const modeChanged = resolvedMode !== mode || newStatus !== prevStatus
+    lastRoundStatusRef.current = newStatus
+
+    if (!modeChanged) return
+
+    setMode(resolvedMode)
+
+    // 根據新模式設定粒子強度與觸發排行榜更新
+    if (resolvedMode === 'reveal' || resolvedMode === 'final') {
+      setParticleIntensity('celebration')
+      fetchLatestResults()
+    } else if (resolvedMode === 'counting') {
+      setParticleIntensity('high')
+      fetchLatestResults() // counting 時也要拉排行榜才有分數可顯示
+    } else if (resolvedMode === 'voting') {
+      setParticleIntensity('normal')
+      // open 回合時同步 currentRound 給倒數計時器用
+      if (currentRound && data.current_round_id) {
+        setCurrentRound({
+          id: data.current_round_id,
+          seq: data.current_round_seq ?? 0,
+          title: data.current_round_title ?? '',
+          type_id: data.current_round_type ?? '',
+          status: 'open',
+          config: data.current_round_config ?? null,
+        } as unknown as Round)
+      }
+      fetchLatestResults()
+    } else {
+      setParticleIntensity('low')
     }
-  }, [setCurrentRound, fetchLatestResults])
+
+    // 同步倒數計時（從 server 端的 countdown_end 時間戳計算剩餘秒數）
+    if (data.countdown_end) {
+      const remaining = Math.max(0, Math.ceil((new Date(data.countdown_end).getTime() - Date.now()) / 1000))
+      if (remaining > 0) {
+        setCountdown(remaining)
+      }
+    }
+  }, [mode, setCurrentRound, setCountdown, fetchLatestResults])
 
   const handleVoteProgress = useCallback((voted: number, total: number) => {
     setVoteProgress({ voted, total })
   }, [])
 
+  const handleVotersUpdate = useCallback((voters: string[]) => {
+    setRecentVoters(voters)
+  }, [])
+
   useLiveSync(code, handleRoundChange, handleVoteProgress, {
     enabled: true,
     intervalMs: 1000,
-  })
+  }, handleVotersUpdate)
+
+  const isManualMode = manualDisplayMode !== 'auto'
 
   return (
     <div className="min-h-screen w-screen theme-golden overflow-hidden relative">
@@ -158,10 +225,10 @@ export default function DisplayPage({
             <h1 className="text-6xl font-black animate-shimmer mb-4">
               {eventName}
             </h1>
-            <p className="text-2xl text-gold-200/50 mb-8">
-              掃描 QR Code 加入活動
+            <p className="text-2xl text-gold-200/50 mb-2">
+              掃描 QR Code 或輸入代碼加入
             </p>
-            <div className="w-96 h-96 bg-white rounded-2xl mx-auto flex items-center justify-center p-4">
+            <div className="w-96 h-96 bg-white rounded-2xl mx-auto flex items-center justify-center p-4 mt-6">
               <QRCodeSVG
                 value={`${typeof window !== 'undefined' ? window.location.origin : 'https://marketingscore.netlify.app'}/play/${code}`}
                 size={360}
@@ -170,7 +237,7 @@ export default function DisplayPage({
                 fgColor="#1A0A00"
               />
             </div>
-            <p className="text-4xl text-gold-200/60 mt-4 font-mono tracking-widest">{code}</p>
+            <p className="text-xl text-gold-200/40 mt-4 font-mono tracking-widest">{code}</p>
           </div>
         )}
 
@@ -180,24 +247,28 @@ export default function DisplayPage({
             <div className="text-2xl text-gold-200/50 mb-4">
               第 {currentRound.seq} 輪
             </div>
-            <h2 className="text-7xl font-black glow-gold-strong mb-4">
+            <h2 className="text-7xl font-black animate-shimmer mb-4">
               {currentRound.title}
             </h2>
           </div>
         )}
 
+        {/* 投票金球（voting 模式時飛出） */}
+        {mode === 'voting' && <VoteBalls voters={recentVoters} />}
+
         {/* 投票進行中 */}
         {mode === 'voting' && (
           <div className="text-center w-full max-w-3xl">
-            <h2 className="text-4xl font-bold glow-gold mb-8">
-              {currentRound?.title ?? '投票進行中'}
+            <p className="text-xl animate-shimmer mb-2 tracking-wide">評分進行中</p>
+            <h2 className="text-4xl font-black animate-shimmer mb-8">
+              {currentRound?.title ?? '請用手機完成評分'}
             </h2>
 
             {/* 進度條 */}
             <div className="mb-8">
               <div className="flex justify-between text-gold-200/60 mb-2 text-xl">
-                <span>已投票</span>
-                <span>{voteProgress.voted} / {voteProgress.total}</span>
+                <span>已完成評分</span>
+                <span>{voteProgress.voted} / {voteProgress.total} 人</span>
               </div>
               <div className="w-full h-4 bg-surface-elevated rounded-full overflow-hidden">
                 <div
@@ -211,8 +282,11 @@ export default function DisplayPage({
 
             {/* 倒數 */}
             {countdown !== null && countdown > 0 && (
-              <div className={`text-8xl font-black tabular-nums ${countdown <= 5 ? 'text-red-400 animate-heartbeat' : 'glow-gold'}`}>
-                {countdown}
+              <div className="mt-8">
+                <div className={`text-[10rem] leading-none font-black tabular-nums ${countdown <= 5 ? 'text-battle-red animate-heartbeat' : 'animate-shimmer'}`}>
+                  {countdown}
+                </div>
+                <div className="text-xl text-gold-200/50 mt-2">剩餘時間</div>
               </div>
             )}
           </div>
@@ -221,12 +295,14 @@ export default function DisplayPage({
         {/* 緊張分數累計 */}
         {mode === 'counting' && (
           <div className="text-center">
-            <h2 className="text-3xl font-bold text-gold-200/80 mb-8">
-              分數統計中...
+            <h2 className="text-3xl font-bold animate-shimmer mb-8">
+              正在統計分數
             </h2>
             <div className="text-[120px] leading-none">
               <ScoreCounter
-                targetScore={entries[0]?.total_score ?? 0}
+                targetScore={
+                  (entries)[0]?.total_score ?? 0
+                }
                 duration={5}
                 suspense
               />
@@ -237,25 +313,38 @@ export default function DisplayPage({
         {/* 排行榜揭曉 */}
         {mode === 'reveal' && (
           <div className="w-full">
-            <h2 className="text-4xl font-bold glow-gold text-center mb-8">
-              🏆 排行榜揭曉
+            <h2 className="text-5xl font-black animate-shimmer text-center mb-8">
+              本輪排行榜
             </h2>
-            <Leaderboard entries={entries} revealing showScores />
+            <Leaderboard
+              entries={entries}
+              revealing
+              showScores
+            />
           </div>
         )}
 
         {/* 最終結果 */}
         {mode === 'final' && (
           <div className="w-full">
-            <h2 className="text-5xl font-black glow-gold-strong text-center mb-12 animate-shimmer">
-              🎉 最終排名 🎉
+            <h2 className="text-6xl font-black animate-shimmer text-center mb-12">
+              最終排名
             </h2>
-            <Leaderboard entries={entries} showScores />
+            <Leaderboard
+              entries={entries}
+              showScores
+            />
           </div>
         )}
       </div>
 
-      {/* polling 模式不需要連線狀態指示器 */}
+      {/* 手動模式角標：主持人手動控制時顯示，讓主持人知道目前是手動覆蓋 */}
+      {isManualMode && (
+        <div className="fixed top-3 right-3 z-50 flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-gold-400/20 border border-gold-400/30 backdrop-blur-sm">
+          <span className="w-1.5 h-1.5 rounded-full bg-gold-400 animate-pulse" />
+          <span className="text-gold-200/70 text-xs font-medium">手動模式</span>
+        </div>
+      )}
     </div>
   )
 }

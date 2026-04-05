@@ -38,6 +38,12 @@ const createEventSchema = z.object({
     type_id: z.enum(['scoring', 'quiz', 'cheer', 'custom']),
     config: z.record(z.string(), z.unknown()).optional(),
   })).max(20).optional(),
+  groups: z.array(z.object({
+    name: z.string().min(1).max(20),
+    color: z.string().max(20).optional(),
+    /** 桌次號碼（1-based），API 內部會轉換成 table UUID */
+    table_numbers: z.array(z.number().int().min(1).max(50)),
+  })).max(8).optional(),
 })
 
 /** 建立新活動 */
@@ -59,7 +65,7 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    const { name, table_count, rounds: roundDefs } = parsed.data
+    const { name, table_count, rounds: roundDefs, groups: groupDefs } = parsed.data
 
     const supabase = createAdminSupabase()
     const code = generateSecureEventCode() // #17 fix: crypto-safe random
@@ -79,12 +85,15 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '建立活動失敗' }, { status: 500 })
     }
 
-    // 2. 建立桌次
-    const tables = Array.from({ length: table_count }, (_, i) => ({
+    // 2. 建立桌次（select 回 id 以供後續分組使用）
+    const tableRows = Array.from({ length: table_count }, (_, i) => ({
       event_id: event.id,
       number: i + 1,
     }))
-    await supabase.from('tables').insert(tables)
+    const { data: tables } = await supabase
+      .from('tables')
+      .insert(tableRows)
+      .select('id, number')
 
     // 3. 建立回合（如果有提供）
     if (roundDefs && roundDefs.length > 0) {
@@ -96,6 +105,43 @@ export async function POST(request: NextRequest) {
         config: r.config ?? {},
       }))
       await supabase.from('rounds').insert(roundRows)
+    }
+
+    // 4. 建立分組（如果有提供）
+    if (groupDefs && groupDefs.length > 0 && tables) {
+      // 建立桌次號碼 → UUID 的對照表
+      const tableNumberMap = new Map<number, string>(
+        (tables as { id: string; number: number }[]).map((t) => [t.number, t.id])
+      )
+
+      for (const g of groupDefs) {
+        const tableIds = g.table_numbers
+          .map((num) => tableNumberMap.get(num))
+          .filter((id): id is string => !!id)
+
+        if (tableIds.length === 0) continue
+
+        // 4a. 新增 groups 記錄（含 table_ids JSON 欄位）
+        const { data: createdGroup } = await supabase
+          .from('groups')
+          .insert({
+            event_id: event.id,
+            name: g.name,
+            color: g.color ?? '#F59E0B',
+            table_ids: tableIds,
+          })
+          .select('id')
+          .single()
+
+        // 4b. 寫入 group_tables 關聯表
+        if (createdGroup) {
+          const groupTableRows = tableIds.map((tableId) => ({
+            group_id: createdGroup.id,
+            table_id: tableId,
+          }))
+          await supabase.from('group_tables').insert(groupTableRows)
+        }
+      }
     }
 
     return NextResponse.json({

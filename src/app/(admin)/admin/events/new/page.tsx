@@ -1,9 +1,10 @@
 'use client'
 
-import { useState, Suspense } from 'react'
+import { useState, Suspense, useEffect } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Plus, Trash2, GripVertical, ChevronLeft, Loader2, AlertCircle } from 'lucide-react'
+import { Plus, Trash2, GripVertical, ChevronLeft, Loader2, AlertCircle, Users, Wand2, X, Check } from 'lucide-react'
+import { QRCodeSVG } from 'qrcode.react'
 
 // 遊戲類型選項
 const ROUND_TYPES = [
@@ -20,6 +21,36 @@ interface RoundDef {
   _key: string
   title: string
   type_id: RoundType
+}
+
+/** 預設分組顏色 */
+const GROUP_COLORS = ['#F59E0B', '#3B82F6', '#10B981', '#EF4444', '#8B5CF6', '#F97316', '#06B6D4', '#EC4899']
+const GROUP_LABELS = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H']
+
+interface GroupDef {
+  _key: string
+  name: string
+  color: string
+  /** 桌次號碼（1-based）陣列 */
+  tableNumbers: number[]
+}
+
+/** 根據桌數自動建議分組（每 2 桌一組） */
+function suggestGroups(tableCount: number): GroupDef[] {
+  if (tableCount < 2) return []
+  const groupSize = 2
+  const groupCount = Math.ceil(tableCount / groupSize)
+  return Array.from({ length: groupCount }, (_, i) => {
+    const start = i * groupSize + 1
+    const end = Math.min(start + groupSize - 1, tableCount)
+    const tableNumbers = Array.from({ length: end - start + 1 }, (_, j) => start + j)
+    return {
+      _key: `g${i}`,
+      name: GROUP_LABELS[i] ?? `第${i + 1}組`,
+      color: GROUP_COLORS[i % GROUP_COLORS.length],
+      tableNumbers,
+    }
+  })
 }
 
 /**
@@ -45,16 +76,41 @@ function genKey() {
 function NewEventForm() {
   const router = useRouter()
   const searchParams = useSearchParams()
-  const adminKey = searchParams.get('key') ?? ''
+
+  // Admin key：URL > localStorage > 預設值
+  const urlKey = searchParams.get('key') ?? ''
+  const [adminKey, setAdminKey] = useState('')
+  useEffect(() => {
+    if (urlKey) {
+      setAdminKey(urlKey)
+      localStorage.setItem('ms_admin_key', urlKey)
+    } else {
+      const stored = localStorage.getItem('ms_admin_key')
+      setAdminKey(stored || '123456')
+    }
+  }, [urlKey])
 
   // 表單狀態
   const [eventName, setEventName] = useState('Adobe FY26 經銷商大會春酒')
   const [tableCount, setTableCount] = useState(8)
   const [rounds, setRounds] = useState<RoundDef[]>(ADOBE_TEMPLATE)
 
+  // 分組狀態
+  const [enableGroups, setEnableGroups] = useState(false)
+  const [groups, setGroups] = useState<GroupDef[]>(() => suggestGroups(8))
+
+  // 桌數變更時同步更新分組建議
+  useEffect(() => {
+    if (enableGroups) {
+      setGroups(suggestGroups(tableCount))
+    }
+  }, [tableCount, enableGroups])
+
   // 提交狀態
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // 建立成功後的分享資訊
+  const [createdEvent, setCreatedEvent] = useState<{ id: string; code: string; name: string } | null>(null)
 
   // 拖曳排序暫存
   const [draggingIdx, setDraggingIdx] = useState<number | null>(null)
@@ -104,6 +160,56 @@ function NewEventForm() {
     setDragOverIdx(null)
   }
 
+  // ─── 分組操作 ─────────────────────────────────────────────────
+
+  function updateGroupName(key: string, name: string) {
+    setGroups((prev) => prev.map((g) => (g._key === key ? { ...g, name } : g)))
+  }
+
+  function updateGroupColor(key: string, color: string) {
+    setGroups((prev) => prev.map((g) => (g._key === key ? { ...g, color } : g)))
+  }
+
+  function removeGroup(key: string) {
+    setGroups((prev) => prev.filter((g) => g._key !== key))
+  }
+
+  function addGroup() {
+    const usedNumbers = new Set(groups.flatMap((g) => g.tableNumbers))
+    const available = Array.from({ length: tableCount }, (_, i) => i + 1).filter((n) => !usedNumbers.has(n))
+    const idx = groups.length
+    setGroups((prev) => [
+      ...prev,
+      {
+        _key: `g${Date.now()}`,
+        name: GROUP_LABELS[idx % GROUP_LABELS.length] ?? `第${idx + 1}組`,
+        color: GROUP_COLORS[idx % GROUP_COLORS.length],
+        tableNumbers: available.slice(0, 2),
+      },
+    ])
+  }
+
+  /** 把某桌從分組中移除或加入 */
+  function toggleTableInGroup(groupKey: string, tableNum: number) {
+    setGroups((prev) =>
+      prev.map((g) => {
+        if (g._key !== groupKey) return g
+        const has = g.tableNumbers.includes(tableNum)
+        return {
+          ...g,
+          tableNumbers: has
+            ? g.tableNumbers.filter((n) => n !== tableNum)
+            : [...g.tableNumbers, tableNum].sort((a, b) => a - b),
+        }
+      })
+    )
+  }
+
+  // 取得已被分配到某桌的組名（用於 UI 提示）
+  function getTableGroup(tableNum: number): GroupDef | undefined {
+    return groups.find((g) => g.tableNumbers.includes(tableNum))
+  }
+
   // ─── 套用範本 ─────────────────────────────────────────────────
   function applyTemplate() {
     setRounds(ADOBE_TEMPLATE.map((r) => ({ ...r, _key: genKey() })))
@@ -129,12 +235,22 @@ function NewEventForm() {
       return
     }
     if (!adminKey) {
-      setError('缺少 admin key，請在 URL 加上 ?key=YOUR_KEY')
+      setError('尚未設定管理密碼，請先從控制台登入')
       return
     }
 
     setSubmitting(true)
     try {
+      const groupsPayload = enableGroups && groups.length > 0
+        ? groups
+            .filter((g) => g.tableNumbers.length > 0)
+            .map((g) => ({
+              name: g.name.trim() || g._key,
+              color: g.color,
+              table_numbers: g.tableNumbers,
+            }))
+        : undefined
+
       const res = await fetch('/api/admin/events', {
         method: 'POST',
         headers: {
@@ -148,6 +264,7 @@ function NewEventForm() {
             title: r.title.trim(),
             type_id: r.type_id,
           })),
+          groups: groupsPayload,
         }),
       })
 
@@ -158,10 +275,13 @@ function NewEventForm() {
         return
       }
 
-      // 成功後跳轉到主持人控制台
-      const eventId = data.event?.id
-      if (eventId) {
-        router.push(`/admin/events/${eventId}/control?key=${encodeURIComponent(adminKey)}`)
+      // 成功後顯示分享頁面
+      if (data.event) {
+        setCreatedEvent({
+          id: data.event.id,
+          code: data.event.code,
+          name: eventName.trim(),
+        })
       } else {
         router.push('/admin')
       }
@@ -170,6 +290,88 @@ function NewEventForm() {
     } finally {
       setSubmitting(false)
     }
+  }
+
+  // ─── 建立成功：分享頁面 ──────────────────────────
+  // 複製按鈕狀態
+  const [copiedKey, setCopiedKey] = useState<string | null>(null)
+
+  if (createdEvent) {
+    const origin = typeof window !== 'undefined' ? window.location.origin : 'https://marketingscore.netlify.app'
+    const playUrl = `${origin}/play/${createdEvent.code}`
+    const displayUrl = `${origin}/display/${createdEvent.code}`
+    const controlUrl = `${origin}/admin/events/${createdEvent.id}/control`
+
+    const copyToClipboard = async (key: string, text: string) => {
+      try {
+        await navigator.clipboard.writeText(text)
+        setCopiedKey(key)
+        setTimeout(() => setCopiedKey(null), 2000)
+      } catch { /* ignore */ }
+    }
+
+    return (
+      <div className="min-h-screen bg-surface-dark p-6">
+        <div className="max-w-md mx-auto text-center">
+          <div className="w-16 h-16 rounded-full bg-green-500/20 flex items-center justify-center mx-auto mb-4">
+            <Check size={32} className="text-green-400" />
+          </div>
+          <h1 className="text-2xl font-bold text-gold-200 mb-2">活動建立成功</h1>
+          <p className="text-white/50 mb-8">{createdEvent.name}</p>
+
+          {/* QR Code */}
+          <div className="bg-white rounded-2xl p-4 inline-block mb-4">
+            <QRCodeSVG value={playUrl} size={240} level="M" bgColor="#FFFFFF" fgColor="#1A0A00" />
+          </div>
+          <p className="text-gold-400 font-mono text-2xl font-bold tracking-widest mb-8">
+            {createdEvent.code}
+          </p>
+
+          {/* 連結列表 */}
+          <div className="space-y-3 text-left mb-8">
+            {[
+              { key: 'play', label: '參與者手機', url: playUrl, icon: '📱' },
+              { key: 'display', label: '大螢幕投影', url: displayUrl, icon: '📺' },
+              { key: 'control', label: '主持人控制台', url: controlUrl, icon: '🎮' },
+            ].map(link => (
+              <div key={link.key} className="flex items-center gap-3 p-3 rounded-xl bg-surface-card border border-white/5">
+                <span className="text-lg">{link.icon}</span>
+                <div className="flex-1 min-w-0">
+                  <div className="text-sm font-medium text-white/80">{link.label}</div>
+                  <div className="text-xs text-white/30 truncate font-mono">{link.url}</div>
+                </div>
+                <button
+                  onClick={() => copyToClipboard(link.key, link.url)}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
+                    copiedKey === link.key
+                      ? 'bg-green-500/20 text-green-400'
+                      : 'bg-gold-400/10 text-gold-200 active:bg-gold-400/20'
+                  }`}
+                >
+                  {copiedKey === link.key ? '✓ 已複製' : '複製'}
+                </button>
+              </div>
+            ))}
+          </div>
+
+          {/* 操作按鈕 */}
+          <div className="flex gap-3">
+            <a
+              href="/admin"
+              className="flex-1 py-3 rounded-xl font-medium text-center bg-white/5 text-white/50"
+            >
+              回到後台
+            </a>
+            <a
+              href={controlUrl}
+              className="flex-1 py-3 rounded-xl font-bold text-center bg-gradient-to-r from-gold-600 to-gold-400 text-surface-dark"
+            >
+              進入控制台
+            </a>
+          </div>
+        </div>
+      </div>
+    )
   }
 
   return (
@@ -243,6 +445,160 @@ function NewEventForm() {
                 </div>
               </div>
             </div>
+          </section>
+
+          {/* ── 分組設定 ─────────────────────────────────────── */}
+          <section className="p-5 rounded-2xl bg-surface-card border border-white/5">
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-2">
+                <Users size={16} className="text-gold-400/60" />
+                <h2 className="text-sm font-bold text-gold-200/60 uppercase tracking-wider">
+                  分組設定（選填）
+                </h2>
+              </div>
+              <label className="relative inline-flex items-center cursor-pointer gap-2">
+                <span className="text-xs text-white/40">
+                  {enableGroups ? '已啟用' : '停用'}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setEnableGroups((v) => !v)}
+                  className={`w-10 h-5 rounded-full transition-colors relative ${
+                    enableGroups ? 'bg-gold-500' : 'bg-white/10'
+                  }`}
+                >
+                  <span
+                    className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${
+                      enableGroups ? 'translate-x-5' : 'translate-x-0.5'
+                    }`}
+                  />
+                </button>
+              </label>
+            </div>
+
+            <AnimatePresence>
+              {enableGroups && (
+                <motion.div
+                  initial={{ opacity: 0, height: 0 }}
+                  animate={{ opacity: 1, height: 'auto' }}
+                  exit={{ opacity: 0, height: 0 }}
+                  transition={{ duration: 0.2 }}
+                  className="overflow-hidden"
+                >
+                  {/* 自動建議提示 */}
+                  <div className="flex items-center gap-2 mb-4 p-3 rounded-lg bg-gold-400/5 border border-gold-400/10">
+                    <Wand2 size={14} className="text-gold-400/60 flex-shrink-0" />
+                    <p className="text-xs text-white/40">
+                      依 {tableCount} 桌自動建議 {groups.length} 組（每 2 桌一組），可手動調整名稱和桌次。
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => setGroups(suggestGroups(tableCount))}
+                      className="ml-auto text-xs text-gold-400/60 hover:text-gold-400 transition-colors whitespace-nowrap underline"
+                    >
+                      重置
+                    </button>
+                  </div>
+
+                  {/* 組別列表 */}
+                  <div className="space-y-3 mb-3">
+                    {groups.map((group) => (
+                      <div
+                        key={group._key}
+                        className="p-3 rounded-xl border border-white/5 bg-surface-elevated"
+                        style={{ borderLeftColor: group.color, borderLeftWidth: 3 }}
+                      >
+                        <div className="flex items-center gap-2 mb-3">
+                          {/* 顏色選擇 */}
+                          <div className="relative">
+                            <input
+                              type="color"
+                              value={group.color}
+                              onChange={(e) => updateGroupColor(group._key, e.target.value)}
+                              className="w-7 h-7 rounded-full cursor-pointer border-0 bg-transparent p-0 opacity-0 absolute inset-0"
+                            />
+                            <div
+                              className="w-7 h-7 rounded-full border border-white/20 cursor-pointer flex-shrink-0"
+                              style={{ backgroundColor: group.color }}
+                            />
+                          </div>
+
+                          {/* 組名 */}
+                          <input
+                            type="text"
+                            value={group.name}
+                            onChange={(e) => updateGroupName(group._key, e.target.value)}
+                            maxLength={20}
+                            placeholder="組名"
+                            className="flex-1 px-3 py-1.5 rounded-lg bg-surface-dark border border-white/5
+                              text-white/80 text-sm placeholder-white/20
+                              focus:outline-none focus:border-gold-400/30 transition-colors"
+                          />
+
+                          {/* 刪除組 */}
+                          <button
+                            type="button"
+                            onClick={() => removeGroup(group._key)}
+                            disabled={groups.length <= 1}
+                            className="w-7 h-7 rounded-lg flex items-center justify-center
+                              text-white/20 hover:text-red-400 hover:bg-red-500/10
+                              disabled:opacity-20 disabled:cursor-not-allowed transition-colors"
+                          >
+                            <X size={13} />
+                          </button>
+                        </div>
+
+                        {/* 桌次選擇 */}
+                        <div className="flex flex-wrap gap-1.5">
+                          {Array.from({ length: tableCount }, (_, i) => i + 1).map((num) => {
+                            const inThisGroup = group.tableNumbers.includes(num)
+                            const otherGroup = !inThisGroup ? getTableGroup(num) : undefined
+                            return (
+                              <button
+                                key={num}
+                                type="button"
+                                onClick={() => toggleTableInGroup(group._key, num)}
+                                title={otherGroup ? `已在 ${otherGroup.name} 組` : `第 ${num} 桌`}
+                                className={`w-8 h-8 rounded-lg text-xs font-bold transition-all ${
+                                  inThisGroup
+                                    ? 'text-surface-dark shadow-sm'
+                                    : otherGroup
+                                    ? 'bg-white/5 text-white/20 cursor-not-allowed'
+                                    : 'bg-white/5 text-white/40 hover:bg-white/10'
+                                }`}
+                                style={inThisGroup ? { backgroundColor: group.color } : undefined}
+                                disabled={!!otherGroup && !inThisGroup}
+                              >
+                                {num}
+                              </button>
+                            )
+                          })}
+                        </div>
+
+                        {group.tableNumbers.length === 0 && (
+                          <p className="text-xs text-red-400/60 mt-2">⚠ 此組尚未分配任何桌次</p>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* 新增組按鈕 */}
+                  <button
+                    type="button"
+                    onClick={addGroup}
+                    disabled={groups.length >= 8}
+                    className="w-full py-2.5 rounded-xl border border-dashed border-white/10
+                      text-white/30 text-sm
+                      hover:border-gold-400/30 hover:text-gold-400/60 hover:bg-gold-400/5
+                      disabled:opacity-30 disabled:cursor-not-allowed
+                      transition-colors flex items-center justify-center gap-2"
+                  >
+                    <Plus size={13} />
+                    新增組別（最多 8 組）
+                  </button>
+                </motion.div>
+              )}
+            </AnimatePresence>
           </section>
 
           {/* ── 回合設定 ─────────────────────────────────────── */}
@@ -393,10 +749,10 @@ function NewEventForm() {
             )}
           </button>
 
-          {/* Admin key 提示 */}
+          {/* Admin key 未設定提示 */}
           {!adminKey && (
-            <p className="text-center text-xs text-red-400/60">
-              ⚠️ 請在 URL 加上 <code className="bg-white/5 px-1 rounded">?key=YOUR_ADMIN_KEY</code> 才能提交
+            <p className="text-center text-xs text-yellow-400/60">
+              尚未設定管理密碼，請先從控制台登入一次
             </p>
           )}
         </form>

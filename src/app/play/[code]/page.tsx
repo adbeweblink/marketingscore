@@ -1,15 +1,14 @@
 'use client'
 
-import { useState, useCallback, useRef, useEffect } from 'react'
+import { useState, useCallback, useRef, useEffect, useMemo } from 'react'
 import { use } from 'react'
 import { TableSelector } from '@/components/play/TableSelector'
 import { QuizOptions } from '@/components/play/QuizOptions'
 import { useLiveSync, type LiveState } from '@/hooks/useLiveSync'
+import { resolvePlayPhase, type PlayPhase } from '@/hooks/useEventState'
 import { cn } from '@/lib/utils'
 import { RANK_EMOJI } from '@/lib/constants'
 import type { Table, Round, ScoreBoard } from '@/types/database'
-
-type PlayPhase = 'join' | 'waiting' | 'voting' | 'submitted' | 'result'
 
 interface ParticipantInfo {
   id: string
@@ -40,6 +39,9 @@ interface TableScore {
   tableNumber: number
   score: number | null
   submitted: boolean
+  // 有分組時的額外欄位
+  groupId?: string
+  groupName?: string
 }
 
 export default function PlayPage({
@@ -54,7 +56,18 @@ export default function PlayPage({
   const [participant, setParticipant] = useState<ParticipantInfo | null>(null)
   const [eventInfo, setEventInfo] = useState<EventInfo | null>(null)
   const [tables, setTables] = useState<Table[]>([])
+  const [groups, setGroups] = useState<import('@/types/database').Group[]>([])
   const [currentRound, setCurrentRound] = useState<Round | null>(null)
+  const [countdown, setCountdown] = useState<number | null>(null)
+
+  // 倒數計時 tick
+  useEffect(() => {
+    if (countdown === null || countdown <= 0) return
+    const timer = setInterval(() => {
+      setCountdown(prev => prev !== null && prev > 0 ? prev - 1 : null)
+    }, 1000)
+    return () => clearInterval(timer)
+  }, [countdown])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   // 儲存 JWT token
@@ -86,21 +99,28 @@ export default function PlayPage({
     }
   }, [code])
 
+  // results API 已根據有無分組自動回傳正確類型（group 或 table），不需前端再聚合
+
   // 同步 phaseRef
   useEffect(() => { phaseRef.current = phase }, [phase])
 
   // useLiveSync：1 秒 polling，偵測回合狀態變化
   const handleRoundChange = useCallback((data: LiveState) => {
     const currentPhase = phaseRef.current
-    const openRound = data.rounds.find((r) => r.status === 'open')
-    const revealedRound = data.rounds.find((r) => r.status === 'revealed')
+    const { shouldVote, shouldResult } = resolvePlayPhase(data.rounds, currentPhase)
 
-    if (openRound && currentPhase !== 'voting') {
-      // 轉換為完整 Round 型別（useLiveSync 的 LiveState 已包含所有欄位）
-      setCurrentRound(openRound as unknown as Round)
+    if (shouldVote) {
+      const openRound = data.rounds.find((r) => r.status === 'open')
+      if (openRound) setCurrentRound(openRound as unknown as Round)
       setPhase('voting')
-    } else if (revealedRound && (currentPhase === 'voting' || currentPhase === 'submitted')) {
+    } else if (shouldResult) {
       setPhase('result')
+    }
+
+    // 同步倒數計時
+    if (data.countdown_end) {
+      const remaining = Math.max(0, Math.ceil((new Date(data.countdown_end).getTime() - Date.now()) / 1000))
+      setCountdown(remaining > 0 ? remaining : null)
     }
   }, [])
 
@@ -143,16 +163,71 @@ export default function PlayPage({
   const [scoringActiveTable, setScoringActiveTable] = useState<string | null>(null)
   const [pendingScore, setPendingScore] = useState<number>(5)
 
-  // 初始化評分列表（當進入投票且是評分制時）
+  // 初始化評分列表（只在回合 ID 真正改變或首次進入 voting 時重置）
+  const lastInitRoundRef = useRef<string | null>(null)
   useEffect(() => {
-    if (phase === 'voting' && currentRound?.type_id === 'scoring' && participant) {
-      const othersScores = tables
-        .filter((t) => t.number !== participant.table_number)
-        .map((t) => ({ tableId: t.id, tableNumber: t.number, score: null, submitted: false }))
-      setTableScores(othersScores)
+    if (phase === 'voting' && (currentRound?.type_id === 'scoring' || currentRound?.type_id === 'custom') && participant) {
+      // 同一回合不重置（防止倒數等事件觸發重跑）
+      if (lastInitRoundRef.current === currentRound.id) return
+      lastInitRoundRef.current = currentRound.id
+
+      if (groups.length > 0) {
+        const myGroup = groups.find(g => g.table_ids?.includes(participant.table_id))
+        const otherGroups = groups.filter(g => g.id !== myGroup?.id)
+        const groupScores: TableScore[] = otherGroups.map(g => ({
+          tableId: g.table_ids?.[0] ?? g.id,
+          tableNumber: 0,
+          score: null,
+          submitted: false,
+          groupId: g.id,
+          groupName: g.name,
+        }))
+        setTableScores(groupScores)
+      } else {
+        const othersScores = tables
+          .filter((t) => t.number !== participant.table_number)
+          .map((t) => ({ tableId: t.id, tableNumber: t.number, score: null, submitted: false }))
+        setTableScores(othersScores)
+      }
       setScoringActiveTable(null)
     }
-  }, [phase, currentRound?.type_id, currentRound?.id, tables, participant])
+  }, [phase, currentRound?.type_id, currentRound?.id, tables, participant, groups])
+
+  // 初始化：fetch 活動名稱和桌次（join 階段就需要顯示）
+  useEffect(() => {
+    if (eventInfo) return // 已有資料不重複 fetch
+    async function fetchEventInfo() {
+      try {
+        const res = await fetch(`/api/events/${code}/status`)
+        if (!res.ok) {
+          if (res.status === 404) {
+            setError('找不到此活動，請確認活動代碼是否正確')
+          }
+          return
+        }
+        const data = await res.json()
+        if (data.error) {
+          setError(data.error)
+          return
+        }
+        setEventInfo({ id: data.event_id, name: data.event_name, code })
+        if (data.tables?.length > 0) setTables(data.tables)
+
+        // 拉取分組
+        try {
+          const gRes = await fetch(`/api/events/${code}/groups`)
+          if (gRes.ok) {
+            const gData = await gRes.json()
+            if (gData.groups?.length > 0) setGroups(gData.groups)
+          }
+        } catch { /* 沒分組也沒關係 */ }
+      } catch {
+        setError('無法連線，請檢查網路')
+      }
+    }
+    fetchEventInfo()
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [code])
 
   // #12: 頁面載入時從 sessionStorage 還原
   useEffect(() => {
@@ -172,6 +247,15 @@ export default function PlayPage({
           : 'waiting'
       setPhase(restoredPhase)
       showToast('已自動恢復上次連線')
+
+      // sessionStorage 還原後，fetchEventInfo 會因 eventInfo 已設定而跳過，
+      // 需在此補拉 groups，否則分組選桌模式會顯示空
+      fetch(`/api/events/${code}/groups`)
+        .then(r => r.ok ? r.json() : null)
+        .then(gData => {
+          if (gData?.groups?.length > 0) setGroups(gData.groups)
+        })
+        .catch(() => { /* 沒分組也沒關係 */ })
     } catch {
       sessionStorage.removeItem(SESSION_KEY)
     }
@@ -314,6 +398,9 @@ export default function PlayPage({
     )
     setScoringActiveTable(null)
 
+    const ts = tableScores.find(t => t.tableId === tableId)
+    const isGroupMode = !!ts?.groupId
+
     try {
       const res = await fetch('/api/vote', {
         method: 'POST',
@@ -323,13 +410,19 @@ export default function PlayPage({
         },
         body: JSON.stringify({
           round_id: currentRound.id,
-          target_table_id: tableId,
+          ...(isGroupMode
+            ? { target_group_id: ts!.groupId }
+            : { target_table_id: tableId }),
           score,
         }),
       })
 
       if (res.ok) {
-        showToast(`✅ 第 ${tableScores.find(t=>t.tableId===tableId)?.tableNumber} 桌 ${score} 分已送出`)
+        if (isGroupMode) {
+          showToast(`✅ ${ts!.groupName} 組 ${score} 分已送出`)
+        } else {
+          showToast(`✅ 第 ${ts?.tableNumber} 桌 ${score} 分已送出`)
+        }
       } else {
         const data = await res.json()
         setError(data.error ?? '評分失敗')
@@ -345,7 +438,7 @@ export default function PlayPage({
   useEffect(() => {
     if (
       phase === 'voting' &&
-      currentRound?.type_id === 'scoring' &&
+      (currentRound?.type_id === 'scoring' || currentRound?.type_id === 'custom') &&
       tableScores.length > 0 &&
       tableScores.every((ts) => ts.submitted)
     ) {
@@ -369,13 +462,22 @@ export default function PlayPage({
         onClick={() => setScoringActiveTable(null)}
       >
         <div
-          className="w-full max-w-sm bg-surface-card rounded-t-3xl p-6 pb-10 border border-white/10"
+          className="w-full max-w-lg bg-surface-card rounded-t-3xl p-6 border border-white/10 pb-[max(2.5rem,env(safe-area-inset-bottom))]"
           onClick={(e) => e.stopPropagation()}
         >
           <div className="text-center mb-4">
-            <p className="text-white/50 text-sm mb-1">為</p>
-            <p className="text-gold-200 text-xl font-bold">第 {activeTs.tableNumber} 桌</p>
-            <p className="text-white/50 text-sm mt-1">打幾分？</p>
+            {activeTs.groupName ? (
+              <>
+                <p className="text-white/50 text-sm mb-1">為以下組別打分</p>
+                <p className="text-gold-200 text-xl font-bold">{activeTs.groupName} 組</p>
+              </>
+            ) : (
+              <>
+                <p className="text-white/50 text-sm mb-1">為以下桌號打分</p>
+                <p className="text-gold-200 text-xl font-bold">第 {activeTs.tableNumber} 桌</p>
+              </>
+            )}
+            <p className="text-white/50 text-sm mt-1">選擇分數後點「送出」</p>
           </div>
 
           {/* 快速數字按鈕 */}
@@ -385,7 +487,7 @@ export default function PlayPage({
                 key={v}
                 onClick={() => setPendingScore(v)}
                 className={cn(
-                  'py-3 rounded-xl text-lg font-black border transition-all',
+                  'min-h-[48px] py-2 rounded-xl text-base font-black border transition-all',
                   pendingScore === v
                     ? 'bg-gold-400 text-surface-dark border-gold-400 shadow-[0_0_12px_rgba(255,179,0,0.5)]'
                     : 'bg-surface-elevated border-white/10 text-white/70',
@@ -412,7 +514,8 @@ export default function PlayPage({
       {phase === 'join' && (
         <TableSelector
           tables={tables.length > 0 ? tables : []}
-          eventName={eventInfo?.name ?? `活動 ${code}`}
+          groups={groups}
+          eventName={eventInfo?.name ?? '載入中...'}
           onJoin={handleJoin}
           loading={loading}
         />
@@ -421,12 +524,12 @@ export default function PlayPage({
       {/* ─── Waiting Phase ───────────────────────────────────── */}
       {phase === 'waiting' && (
         <div className="min-h-screen flex flex-col items-center justify-center px-6 text-center">
-          <div className="text-6xl mb-4 animate-pulse">🎵</div>
-          <h2 className="text-2xl font-bold text-gold-200 mb-3">
-            {currentRound ? currentRound.title : '等待主持人開始'}
+          <div className="w-12 h-12 border-2 border-white/10 border-t-gold-400 rounded-full animate-spin mb-6" />
+          <h2 className="text-2xl font-bold text-gold-200 mb-2">
+            {currentRound ? currentRound.title : '等待主持人開始回合'}
           </h2>
           <p className="text-white/50 text-base mb-2">
-            {currentRound ? '即將開始，請準備！' : '活動開始時畫面會自動切換'}
+            {currentRound ? '主持人即將開放投票，請保持待機' : '主持人開始後，畫面將自動跳轉至投票頁'}
           </p>
 
           {/* #9: 顯示目前輪數 */}
@@ -455,7 +558,7 @@ export default function PlayPage({
           )}
 
           <p className="text-white/20 text-xs mt-4">
-            📱 畫面會自動更新
+            畫面將自動更新，無需手動操作
           </p>
 
           {/* 備案：手動重整按鈕 */}
@@ -468,34 +571,45 @@ export default function PlayPage({
               bg-white/5 text-white/40 border border-white/10
               active:bg-white/10 transition-colors"
           >
-            🔄 畫面沒動？點這裡同步
+            畫面未更新？點此手動同步
           </button>
         </div>
       )}
 
       {/* ─── Voting Phase ────────────────────────────────────── */}
       {phase === 'voting' && currentRound && (
-        <div className="min-h-screen flex flex-col items-center justify-start px-4 pt-10 pb-8">
+        <div className="min-h-screen flex flex-col items-center justify-start px-4 pt-4 pb-[env(safe-area-inset-bottom,24px)]" style={{ paddingBottom: 'max(2rem, env(safe-area-inset-bottom))' }}>
           <div className="text-center mb-6">
             <h2 className="text-lg font-bold text-gold-200/60">
               {currentRound.title}
             </h2>
             {/* #9: 顯示輪數 */}
             <p className="text-gold-400/50 text-xs mt-1">第 {currentRound.seq} 輪</p>
+            {/* 倒數計時 */}
+            {countdown !== null && countdown > 0 && (
+              <div className={`mt-3 text-5xl font-black tabular-nums ${countdown <= 5 ? 'text-red-400 animate-pulse' : 'text-gold-400 glow-gold'}`}>
+                {countdown}
+                <span className="text-lg text-gold-200/40 ml-1">秒</span>
+              </div>
+            )}
           </div>
 
-          {/* 評分制 — 快速評分模式 #8 */}
-          {currentRound.type_id === 'scoring' && (
-            <div className="w-full max-w-sm mx-auto">
+          {/* 評分制 — 快速評分模式 #8（scoring + custom 都走評分 UI） */}
+          {(currentRound.type_id === 'scoring' || currentRound.type_id === 'custom') && (
+            <div className="w-full max-w-lg mx-auto">
               {/* 進度 */}
               <div className="text-center mb-4">
-                <p className="text-gold-200/80 text-base font-bold mb-1">👆 點任一桌號，為他們打分！</p>
+                {tableScores[0]?.groupId ? (
+                  <p className="text-gold-200/80 text-base font-bold mb-1">點選組別，為該組打分</p>
+                ) : (
+                  <p className="text-gold-200/80 text-base font-bold mb-1">點選桌號，為該桌打分</p>
+                )}
                 <span className="text-white/40 text-sm">
-                  已評 {tableScores.filter((ts) => ts.submitted).length} / {tableScores.length} 桌
+                  已評分：{tableScores.filter((ts) => ts.submitted).length} / {tableScores.length} {tableScores[0]?.groupId ? '組' : '桌'}
                 </span>
               </div>
 
-              {/* 桌號 grid */}
+              {/* 桌號 / 組別 grid */}
               <div className="grid grid-cols-3 gap-3 mb-6">
                 {tableScores.map((ts) => (
                   <button
@@ -506,7 +620,7 @@ export default function PlayPage({
                       setPendingScore(Math.ceil(((currentRound.config?.scale_min ?? 1) + (currentRound.config?.scale_max ?? 10)) / 2))
                     }}
                     className={cn(
-                      'py-4 rounded-xl text-center transition-all font-bold text-lg border',
+                      'min-h-[56px] py-3 rounded-xl text-center transition-all font-bold text-base border',
                       ts.submitted
                         ? 'bg-green-900/30 border-green-500/40 text-green-400 cursor-default'
                         : scoringActiveTable === ts.tableId
@@ -521,7 +635,11 @@ export default function PlayPage({
                       </span>
                     ) : (
                       <span className="flex flex-col items-center gap-0.5">
-                        <span>第 {ts.tableNumber} 桌</span>
+                        {ts.groupName ? (
+                          <span>{ts.groupName} 組</span>
+                        ) : (
+                          <span>第 {ts.tableNumber} 桌</span>
+                        )}
                       </span>
                     )}
                   </button>
@@ -550,14 +668,13 @@ export default function PlayPage({
           {/* 歡呼制 */}
           {currentRound.type_id === 'cheer' && (
             <div className="text-center py-8 px-6">
-              <div className="text-7xl mb-4 animate-bounce">👏</div>
               <h2 className="text-2xl font-bold text-gold-200 mb-3">
-                用力歡呼！
+                為你支持的桌號歡呼
               </h2>
               <p className="text-white/50 text-base">
-                本輪由主持人根據歡呼聲決定分數
+                主持人將根據現場歡呼聲判定分數
                 <br />
-                <span className="text-gold-400">大聲喊出你支持的桌號吧！</span>
+                <span className="text-gold-400">大聲為你支持的桌號喝采吧！</span>
               </p>
             </div>
           )}
@@ -567,10 +684,12 @@ export default function PlayPage({
       {/* ─── Submitted Phase ─────────────────────────────────── */}
       {phase === 'submitted' && (
         <div className="min-h-screen flex flex-col items-center justify-center px-6 text-center">
-          <div className="text-6xl mb-4">✅</div>
-          <h2 className="text-2xl font-bold text-gold-200 mb-3">投票成功！</h2>
+          <div className="w-16 h-16 rounded-full bg-green-500/20 border-2 border-green-400/50 flex items-center justify-center mb-5">
+            <span className="text-green-400 text-2xl font-bold">✓</span>
+          </div>
+          <h2 className="text-2xl font-bold text-gold-200 mb-2">評分已送出</h2>
           <p className="text-white/50 text-base mb-4">
-            等待其他人投完，主持人會揭曉結果
+            等待其他人完成評分，主持人將手動揭曉結果
           </p>
 
           {/* #11: 我的桌目前排名 */}
@@ -584,46 +703,47 @@ export default function PlayPage({
           )}
 
           <p className="text-white/20 text-xs">
-            👀 結果揭曉時請看大螢幕
+            結果揭曉時請抬頭看大螢幕
           </p>
           <button
             onClick={() => { syncNow(); showToast('已手動同步') }}
             className="mt-3 px-5 py-2 rounded-xl text-xs text-white/30 bg-white/5 border border-white/10 active:bg-white/10"
           >
-            🔄 畫面沒動？點這裡同步
+            畫面未更新？點此手動同步
           </button>
         </div>
       )}
 
       {/* ─── Result Phase ────────────────────────────────────── */}
       {phase === 'result' && (
-        <div className="min-h-screen flex flex-col px-4 pt-8 pb-10">
+        <div className="min-h-screen flex flex-col px-4 pt-8 pb-[max(2.5rem,env(safe-area-inset-bottom))]">
           <div className="text-center mb-6">
-            <div className="text-5xl mb-3">🏆</div>
-            <h2 className="text-2xl font-bold text-gold-200 mb-1">結果揭曉！</h2>
-            <p className="text-white/40 text-sm">📱 下一輪開始時畫面會自動切換
-              <button
-                onClick={() => { syncNow(); fetchLeaderboard(); showToast('已手動同步') }}
-                className="block mx-auto mt-3 px-5 py-2 rounded-xl text-xs text-white/30 bg-white/5 border border-white/10 active:bg-white/10"
-              >
-                🔄 畫面沒動？點這裡同步
-              </button>
-            </p>
+            <h2 className="text-2xl font-bold text-gold-200 mb-1">本輪排行榜</h2>
+            <p className="text-white/40 text-sm">下一輪開始時畫面將自動切換</p>
+            <button
+              onClick={() => { syncNow(); fetchLeaderboard(); showToast('已手動同步') }}
+              className="inline-block mt-3 px-5 py-2 rounded-xl text-xs text-white/30 bg-white/5 border border-white/10 active:bg-white/10"
+            >
+              畫面未更新？點此手動同步
+            </button>
           </div>
 
           {/* #10: 手機上顯示精簡排行榜 */}
           {leaderboard.length > 0 ? (
-            <div className="w-full max-w-sm mx-auto space-y-2">
+            <div className="w-full max-w-lg mx-auto space-y-2">
               {leaderboard.map((entry, idx) => {
                 const rank = idx + 1
-                const isMyTable = participant && entry.entity_id === participant.table_id
+                const isMyGroup = participant && (
+                  entry.entity_id === participant.table_id ||
+                  groups.find(g => g.id === entry.entity_id)?.table_ids?.includes(participant.table_id)
+                )
                 const rankEmoji = RANK_EMOJI[rank] ?? `#${rank}`
                 return (
                   <div
                     key={entry.entity_id}
                     className={cn(
                       'flex items-center gap-3 px-4 py-3 rounded-xl border',
-                      isMyTable
+                      isMyGroup
                         ? 'bg-gold-400/15 border-gold-400/50'
                         : rank <= 3
                           ? 'bg-white/8 border-white/15'
@@ -633,12 +753,17 @@ export default function PlayPage({
                     <span className="w-10 text-center text-2xl font-black flex-shrink-0">
                       {rankEmoji}
                     </span>
-                    <span className="flex-1 font-bold text-white/90 truncate">
-                      {entry.entity_name}
-                      {isMyTable && (
-                        <span className="ml-2 text-gold-400 text-xs">← 我的桌</span>
+                    <div className="flex-1 min-w-0">
+                      <div className="font-bold text-white/90 truncate">
+                        {entry.entity_name}
+                        {isMyGroup && (
+                          <span className="ml-2 text-gold-400 text-xs">← {groups.length > 0 ? '我的組' : '我的桌'}</span>
+                        )}
+                      </div>
+                      {(entry as unknown as { subtitle?: string }).subtitle && (
+                        <div className="text-xs text-white/30">{(entry as unknown as { subtitle?: string }).subtitle}</div>
                       )}
-                    </span>
+                    </div>
                     <span className="text-gold-300 font-black text-xl tabular-nums">
                       {entry.total_score}
                     </span>

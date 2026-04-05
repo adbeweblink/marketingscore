@@ -1,7 +1,7 @@
 import jwt from 'jsonwebtoken'
 import { randomBytes } from 'crypto'
 
-const JWT_SECRET = process.env.PARTICIPANT_JWT_SECRET || process.env.ADMIN_SECRET_KEY || 'dev-fallback-change-me'
+const JWT_SECRET = process.env.PARTICIPANT_JWT_SECRET || process.env.ADMIN_SECRET_KEY
 
 interface ParticipantPayload {
   sub: string        // participant_id
@@ -12,11 +12,13 @@ interface ParticipantPayload {
 
 /** 簽發參與者 JWT（加入活動時呼叫） */
 export function signParticipantToken(payload: ParticipantPayload): string {
+  if (!JWT_SECRET) throw new Error('PARTICIPANT_JWT_SECRET 未設定，無法簽發 token')
   return jwt.sign(payload, JWT_SECRET, { expiresIn: '12h' })
 }
 
 /** 驗證並解析參與者 JWT */
 export function verifyParticipantToken(token: string): ParticipantPayload | null {
+  if (!JWT_SECRET) return null // 無 secret 時拒絕所有 token
   try {
     return jwt.verify(token, JWT_SECRET) as ParticipantPayload
   } catch {

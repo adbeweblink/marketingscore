@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { voteSchema, checkSelfVote, checkRoundOpen } from '@/lib/anti-cheat'
 import { createAdminSupabase } from '@/lib/supabase/server'
 import { verifyParticipantToken } from '@/lib/auth'
+import { getEngine } from '@/lib/game-engine'
 
 export async function POST(request: NextRequest) {
   try {
@@ -75,6 +76,20 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: selfCheck.error }, { status: 403 })
     }
 
+    // 7.5 game-engine 驗證（依回合模式決定額外規則）
+    const engine = getEngine(round.type_id)
+    const engineCheck = engine.validateVote({
+      voter_table_id: payload.table_id,
+      target_table_id: target_table_id ?? undefined,
+      target_group_id: target_group_id ?? undefined,
+      score: score ?? undefined,
+      answer: answer ?? undefined,
+      config: round.config ?? {},
+    })
+    if (!engineCheck.valid) {
+      return NextResponse.json({ error: engineCheck.error ?? '投票驗證失敗' }, { status: 400 })
+    }
+
     // 8. 寫入投票
     const { error: voteError } = await supabase.from('votes').insert({
       round_id,
@@ -97,8 +112,13 @@ export async function POST(request: NextRequest) {
     // 9. 更新 results_cache
     const targetId = target_table_id ?? target_group_id
     const targetType = target_table_id ? 'table' : 'group'
-    // 評分制用實際分數，猜謎制用 1 計票數
-    const cacheScore = score ?? (answer ? 1 : null)
+    // 分數計算由 game-engine 決定（評分制用實際分數、猜謎制計票、歡呼制由主持人）
+    const engineScore = engine.calculateScore([{
+      score: score ?? null,
+      answer: answer ?? null,
+      voter_table_id: payload.table_id,
+    }])
+    const cacheScore = engineScore > 0 ? engineScore : null
     if (targetId && cacheScore !== null) {
       const { error: cacheError } = await supabase.rpc('increment_result_cache', {
         p_round_id: round_id,

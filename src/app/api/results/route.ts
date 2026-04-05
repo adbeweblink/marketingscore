@@ -42,7 +42,7 @@ export async function GET(request: NextRequest) {
   // 先用 event_code 查 event_id
   const { data: event } = await supabase
     .from('events')
-    .select('id')
+    .select('id, name')
     .eq('code', eventCode!.toUpperCase())
     .single()
 
@@ -87,12 +87,17 @@ export async function GET(request: NextRequest) {
     }
   }
 
-  const sorted = Array.from(totals.values())
+  // 有分組時只回傳 group 結果，無分組時只回傳 table 結果
+  const hasGroups = Array.from(totals.values()).some(r => r.target_type === 'group')
+  const filtered = Array.from(totals.values())
+    .filter(r => hasGroups ? r.target_type === 'group' : r.target_type === 'table')
+
+  const sorted = filtered
     .sort((a, b) => b.total_score - a.total_score)
     .map((r, i) => ({ ...r, rank: i + 1 }))
 
   const enriched = await enrichResults(supabase, sorted)
-  return NextResponse.json({ results: enriched })
+  return NextResponse.json({ results: enriched, event_name: event.name })
 }
 
 interface TableInfo { id: string; number: number; name: string | null }
@@ -103,22 +108,49 @@ async function enrichResults(supabase: ReturnType<typeof createAdminSupabase>, r
     .filter((r) => r.target_type === 'table')
     .map((r) => r.target_id)
 
-  if (tableIds.length === 0) return results
+  const groupIds = results
+    .filter((r) => r.target_type === 'group')
+    .map((r) => r.target_id)
 
-  const { data: tables } = await supabase
-    .from('tables')
-    .select('id, number, name')
-    .in('id', tableIds)
-
+  // 查桌次
   const tableMap = new Map<string, TableInfo>()
-  for (const t of (tables ?? []) as TableInfo[]) {
-    tableMap.set(t.id, t)
+  if (tableIds.length > 0) {
+    const { data: tables } = await supabase
+      .from('tables')
+      .select('id, number, name')
+      .in('id', tableIds)
+    for (const t of (tables ?? []) as TableInfo[]) {
+      tableMap.set(t.id, t)
+    }
+  }
+
+  // 查組別
+  const groupMap = new Map<string, { id: string; name: string; table_ids: string[] }>()
+  if (groupIds.length > 0) {
+    const { data: groups } = await supabase
+      .from('groups')
+      .select('id, name, table_ids')
+      .in('id', groupIds)
+    for (const g of (groups ?? []) as Array<{ id: string; name: string; table_ids: string[] }>) {
+      groupMap.set(g.id, g)
+    }
   }
 
   return results.map((r) => {
+    if (r.target_type === 'group') {
+      const group = groupMap.get(r.target_id)
+      return {
+        ...r,
+        entity_id: r.target_id,
+        entity_type: r.target_type,
+        entity_name: group?.name ?? '未知組別',
+      }
+    }
     const table = tableMap.get(r.target_id)
     return {
       ...r,
+      entity_id: r.target_id,
+      entity_type: r.target_type,
       entity_name: table?.name ?? `第 ${table?.number ?? '?'} 桌`,
       entity_number: table?.number,
     }
