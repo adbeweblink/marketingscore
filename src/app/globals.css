@@ -28,8 +28,8 @@
   --color-surface-card: #12121a;
   --color-surface-elevated: #1e1e2a;
 
-  --font-display: 'Noto Sans TC', 'Microsoft JhengHei', sans-serif;
-  --font-body: 'Noto Sans TC', 'Microsoft JhengHei', sans-serif;
+  --font-display: var(--font-noto-sans-tc), 'Microsoft JhengHei', sans-serif;
+  --font-body: var(--font-noto-sans-tc), 'Microsoft JhengHei', sans-serif;
 }
 
 /* 柏青哥大螢幕主題 */
